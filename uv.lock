@@ -981,6 +981,34 @@ wheels = [
 ]
 
 [[package]]
+name = "ollama"
+version = "0.6.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fc/72/5f12423b6b39ca8430fbe56f77fcf4ef60f63067c7c4a2e30e200ed9ec16/ollama-0.6.2.tar.gz", hash = "sha256:936d55daa684f474364c098611c933626f8d6c7d67065c5b7ae0c477b508b07f", size = 53145, upload-time = "2026-04-29T21:21:15.018Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c4/ab/d6722beeb2d10f7a3b9ff49375708904fde18f82b5609a0bc4aeb5996a4d/ollama-0.6.2-py3-none-any.whl", hash = "sha256:3ad7daab28e5a973445c36a73882a3ef698c2ebb00e21e308652741577509f7d", size = 15115, upload-time = "2026-04-29T21:21:13.794Z" },
+]
+
+[[package]]
+name = "ollama-haystack"
+version = "6.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "haystack-ai" },
+    { name = "ollama" },
+    { name = "pydantic" },
+    { name = "tenacity" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fb/60/5614ba650110546684ef00beea46d261a714e6192f39c9f5c914dc11b668/ollama_haystack-6.3.0.tar.gz", hash = "sha256:672891612c8126e04d4bbf7cb3eb14871abf26ba2de97b85bb60852288152225", size = 101544, upload-time = "2026-04-10T14:38:07.236Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f9/4e/6a850d4dafa3d1b8a4e6218d917293846b9366a7e4197b423c7add45cad3/ollama_haystack-6.3.0-py3-none-any.whl", hash = "sha256:529cb03e584963c97b22a325f336b6b79988d6bc58f65083bee8d60f7b087d3f", size = 21519, upload-time = "2026-04-10T14:38:05.68Z" },
+]
+
+[[package]]
 name = "openai"
 version = "2.36.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1535,6 +1563,7 @@ dependencies = [
     { name = "haystack-ai" },
     { name = "httpx" },
     { name = "ocrmypdf" },
+    { name = "ollama-haystack" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pypdf" },
@@ -1568,6 +1597,7 @@ requires-dist = [
     { name = "haystack-ai", specifier = ">=2.9.0" },
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "ocrmypdf", specifier = ">=16.7.0" },
+    { name = "ollama-haystack", specifier = ">=2.0.0" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "pydantic-settings", specifier = ">=2.7.0" },
     { name = "pypdf", specifier = ">=5.1.0" },

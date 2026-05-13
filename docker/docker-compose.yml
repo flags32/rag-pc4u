@@ -1,0 +1,60 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: rag-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    networks:
+      - ragnet
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rag-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    networks:
+      - ragnet
+    # GPU NVIDIA (décommenter si dispo dans le LXC) :
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: rag-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../.env
+    environment:
+      # Overrides pour le réseau Docker (les services se voient par leur nom)
+      OLLAMA_HOST: http://ollama:11434
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+    depends_on:
+      - qdrant
+      - ollama
+    restart: unless-stopped
+    networks:
+      - ragnet
+
+volumes:
+  qdrant_data:
+  ollama_data:
+
+networks:
+  ragnet:
+    driver: bridge
