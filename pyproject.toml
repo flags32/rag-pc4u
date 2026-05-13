@@ -1,0 +1,93 @@
+[project]
+name = "rag-pc4u"
+version = "0.1.0"
+description = "Solution RAG on-premise souveraine pour PC4U — stack Haystack + Qdrant + Ollama"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "Proprietary" }
+
+dependencies = [
+    # Framework RAG
+    "haystack-ai>=2.9.0",
+    "qdrant-haystack>=5.0.0",
+
+    # Base vectorielle client
+    
+
+    # Embeddings BGE-M3 (dense + sparse)
+    
+
+    # API
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "python-multipart>=0.0.18",
+
+    # Parsing documentaire
+    # "docling>=2.15.0",
+    "pypdf>=5.1.0",
+
+    # OCR
+    "ocrmypdf>=16.7.0",
+
+    # Formats Word
+    "python-docx>=1.1.2",
+
+    # Connecteur Nextcloud / WebDAV
+    "webdavclient3>=3.14.6",
+
+    # Connecteur SMB
+    "smbprotocol>=1.13.0",
+
+    # Recherche lexicale BM25
+    "rank-bm25>=0.2.2",
+
+    # HTTP client async (pour Ollama)
+    "httpx>=0.28.0",
+
+    # Utilitaires
+    "python-dotenv>=1.0.1",
+    "rich>=13.9.0",
+    "tenacity>=9.0.0",
+    "structlog>=24.4.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.28.0",          # client de test FastAPI (TestClient)
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "pre-commit>=4.0.0",
+]
+
+[project.scripts]
+rag-api = "rag_pc4u.api.main:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rag_pc4u"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "--cov=src/rag_pc4u --cov-report=term-missing --cov-fail-under=60"
