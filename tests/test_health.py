@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from rag_pc4u.api.main import app
 
 
-def test_health_returns_ok() -> None:
+def test_health_returns_ok() -> None:# sert a tester le serveur et verifier que l'utilisateur peut se connecter et que les données sont disponibles
     with TestClient(app) as client:
         response = client.get("/health")
 

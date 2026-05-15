@@ -15,7 +15,8 @@ document_store.write_documents(#fonction de test
 )
 print(document_store.count_documents())
 assert document_store.count_documents() == 2
-"""ici version memoire vive """
+"""ici il n'y a que la version avec la memoire vive """
+
 """
 cependant on peut aussi utiliser cettee version en mémoire persistante :
     from haystack.dataclasses.document import Document
@@ -38,3 +39,5 @@ cependant on peut aussi utiliser cettee version en mémoire persistante :
     )
     print(document_store.count_documents())
 """
+
+"""il faut que j'utilise ça QdrantHybridRetriever mais pour ça il me faut un space vector soit un espace vectoriel"""
