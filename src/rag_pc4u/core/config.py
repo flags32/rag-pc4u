@@ -10,13 +10,19 @@ class Settings(BaseSettings):
     )
 
     # Ollama
-    ollama_host: str = "http://localhost:11434"
+    ollama_host: str = "http://localhost:11434" #modifier en fonction
     ollama_embed_model: str = "bge-m3"
     ollama_llm_model: str = "qwen2.5:7b"
 
     # Qdrant
     qdrant_host: str = "localhost"
-    qdrant_port: int = 6333
+    qdrant_port: int = 6333 # à modifier en fonction de l'installation de Qdrant
+    embedding_dim: int = 1024  # dimension de bge-m3, utilisée à la création de la collection
+
+    # RAG
+    top_k: int = 5  # nombre de chunks remontés par le retriever
+    chunk_size: int = 512  # taille des chunks pour DocumentSplitter
+    chunk_overlap: int = 50  # recouvrement entre chunks
 
     # API
     api_host: str = "0.0.0.0"
@@ -24,8 +30,7 @@ class Settings(BaseSettings):
 
     # Cloisonnement client
     client_id: str = "client_demo"
-    collection_name: str = "documents_client_demo"
-
+    collection_name: str = "documents_client_demo"# à modifier en fonction du client pour l'instant ce n'est pas configurable et c'est de la demo
     # SMB
     smb_host: str = ""
     smb_share: str = ""
