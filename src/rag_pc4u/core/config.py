@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # Logs
     log_level: str = "INFO"
 
-    @property
+    @property#proprety est utile pour tout ce qui est url ou autre en python car on peut l'appeler directement sans faire un get'
     def qdrant_url(self) -> str:
         return f"http://{self.qdrant_host}:{self.qdrant_port}"
 

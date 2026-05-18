@@ -1,3 +1,14 @@
+from haystack_integrations.document_stores.qdrant import QdrantDocumentStore
+
+"""version locale Docker utilisée par OpenWebUI pour le RAG"""
+document_store = QdrantDocumentStore(
+    url="http://localhost:6333",  # L'instance Docker locale
+    index="MonIndex",
+    embedding_dim=384,
+)
+
+"""voici la version en mémoire vive (utilisée pour les tests) """
+"""
 from haystack.dataclasses.document import Document
 from haystack_integrations.document_stores.qdrant import QdrantDocumentStore
 
@@ -15,14 +26,15 @@ document_store.write_documents(#fonction de test
 )
 print(document_store.count_documents())
 assert document_store.count_documents() == 2
-"""ici il n'y a que la version avec la memoire vive """
+"""
 
 """
 cependant on peut aussi utiliser cettee version en mémoire persistante :
     from haystack.dataclasses.document import Document
     from haystack_integrations.document_stores.qdrant import QdrantDocumentStore
     from haystack.utils import Secret
-    
+    attention ici c'est du cloud
+
     document_store = QdrantDocumentStore(
         url="https://XXXXXXXXX.us-east4-0.gcp.cloud.qdrant.io:6333",
         index="your_index_name",
@@ -30,7 +42,7 @@ cependant on peut aussi utiliser cettee version en mémoire persistante :
         recreate_index=True,  # enable only to recreate the index and not connect to the existing one
         api_key=Secret.from_token("YOUR_TOKEN"),
     )
-    
+
     document_store.write_documents(
         [
             Document(content="This is first", embedding=[0.0] * 5),
