@@ -1,0 +1,1 @@
+"""Module de routes pour la santé de l'API RAG PC4U."""

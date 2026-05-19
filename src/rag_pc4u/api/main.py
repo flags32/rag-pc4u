@@ -1,11 +1,15 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, List, Optional
 
 import structlog
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Header
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
+# Import des composants Haystack / Qdrant et configurations
+from rag_pc4u.core.components import execute_query
 from rag_pc4u.core.config import settings
 from rag_pc4u.core.logging import configure_logging
 
@@ -33,6 +37,45 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Configuration CORS indispensable pour qu'Open WebUI puisse requêter l'API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # À restreindre en production à l'URL de l'Open WebUI
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# --- MODÈLES PYDANTIC POUR LA COMPATIBILITÉ OPENAI (OPEN WEBUI) ---
+
+class ChatMessage(BaseModel):
+    role: str  # "user", "assistant", "system"
+    content: str
+
+
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: List[ChatMessage]
+    temperature: Optional[float] = 0.7
+    stream: Optional[bool] = False
+
+
+class ChatCompletionResponseChoice(BaseModel):
+    index: int = 0
+    message: ChatMessage
+    finish_reason: str = "stop"
+
+
+class ChatCompletionResponse(BaseModel):
+    id: str = "chatcmpl-rag-pc4u"
+    object: str = "chat.completion"
+    created: int = 1710000000
+    model: str
+    choices: List[ChatCompletionResponseChoice]
+
+
+# --- ENDPOINTS ---
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
@@ -41,6 +84,69 @@ async def health() -> dict[str, Any]:
         "client_id": settings.client_id,
         "collection": settings.collection_name,
     }
+
+
+@app.get("/v1/models")
+async def list_models():
+    """
+    Endpoint requis par Open WebUI pour détecter les modèles disponibles.
+    On expose le RAG Haystack comme un modèle sémantique standard.
+    """
+    return {#sert a retourner une list de model
+        "object": "list",
+        "data": [
+            {
+                "id": "rag-hybrid-pc4u",
+                "object": "model",
+                "created": 1710000000,
+                "owned_by": "pc4u"
+            }
+        ]
+    }
+
+
+@app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
+async def chat_completions(
+        request: ChatCompletionRequest,
+        x_client_id: Optional[str] = Header(None, alias="X-Client-Id")
+):
+    """
+    Endpoint OpenAI simulé qui reçoit les messages d'Open WebUI,
+    extrait la question, exécute le pipeline Haystack/Qdrant et renvoie la réponse.
+    """
+    # 1. Extraction du dernier message de l'utilisateur
+    user_messages = [msg.content for msg in request.messages if msg.role == "user"]
+    if not user_messages:
+        raise HTTPException(status_code=400, detail="Aucun message utilisateur trouvé.")
+
+    last_question = user_messages[-1]
+
+    # 2. Gestion du multi-tenant (Cloisonnement client)
+    # Reçoit le client_id depuis les headers, sinon se replie sur la config de démo
+    client_id = x_client_id or settings.client_id
+
+    try:
+        logger.info("api.rag.execute", client_id=client_id, model_requested=request.model)
+
+        # 3. Appel de ton pipeline Haystack (Dense + Sparse + Qdrant + Ollama)
+        rag_response = execute_query(question=last_question, client_id=client_id)
+
+        # 4. Formatage du retour au format OpenAI attendu par Open WebUI
+        return ChatCompletionResponse(
+            model=request.model,
+            choices=[
+                ChatCompletionResponseChoice(
+                    index=0,
+                    message=ChatMessage(
+                        role="assistant",
+                        content=rag_response.answer
+                    )
+                )
+            ]
+        )
+    except Exception as e:
+        logger.error("api.rag.error", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Erreur interne du RAG Haystack: {str(e)}")
 
 
 def run() -> None:
@@ -54,3 +160,15 @@ def run() -> None:
 
 if __name__ == "__main__":
     run()
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,1 @@
+"""Module de routes pour les requêtes de l'API RAG PC4U."""

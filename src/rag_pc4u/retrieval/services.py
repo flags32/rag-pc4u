@@ -1,0 +1,1 @@
+"""Services module Rag PC4U pour retrieval"""

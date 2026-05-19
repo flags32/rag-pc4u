@@ -1,0 +1,1 @@
+"""Module de sécurité pour l'API RAG PC4U."""

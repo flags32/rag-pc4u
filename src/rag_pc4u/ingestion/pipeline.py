@@ -1,0 +1,1 @@
+"""Module de pipeline d'ingestion pour l'API RAG PC4U."""

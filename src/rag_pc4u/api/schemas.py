@@ -1,0 +1,1 @@
+"""Schémas de données pour l'API RAG PC4U."""
