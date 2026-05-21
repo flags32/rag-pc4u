@@ -10,13 +10,14 @@ class Settings(BaseSettings):
     )
 
     # Ollama
-    ollama_host: str = "http://localhost:11434" #modifier en fonction
+    ollama_host: str = "http://192.168.204.8:11434" #modifier en fonction
     ollama_embed_model: str = "bge-m3"
     ollama_llm_model: str = "qwen2.5:7b"
 
     # Qdrant
-    qdrant_host: str = "localhost"
-    qdrant_port: int = 6333 # à modifier en fonction de l'installation de Qdrant
+    # Qdrant pointe vers ton LXC Proxmox
+    qdrant_host: str = "192.168.204.6"
+    qdrant_port: int = 6333
     embedding_dim: int = 1024  # dimension de bge-m3, utilisée à la création de la collection
 
     # RAG
@@ -42,7 +43,6 @@ class Settings(BaseSettings):
     nextcloud_user: str = ""
     nextcloud_password: str = ""
     nextcloud_remote_path: str = "/documents"
-
     # Logs
     log_level: str = "INFO"
 

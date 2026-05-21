@@ -2,7 +2,7 @@ import structlog
 from haystack.dataclasses.document import Document
 from haystack_integrations.document_stores.qdrant import QdrantDocumentStore
 from rag_pc4u.core.config import settings
-
+""""
 document_store = QdrantDocumentStore(#fonction qui sert a tester le document store
     ":memory:",#memory signifiant que les données sont stockées en mémoire vive
     recreate_index=True,
@@ -17,14 +17,14 @@ document_store.write_documents(#fonction de test
 )
 print(document_store.count_documents())
 assert document_store.count_documents() == 2
-
+"""
 logger = structlog.get_logger(__name__)
 
 def init_database():
     """Initialise la collection avec le schéma hybride complet (Dense + Sparse)."""
     logger.info("Vérification et création de la collection hybride...")
 
-    # En passant recreate_index=True une première fois (ou si tu lances une démo),
+    # En passant recreate_index=True une première fois (ou si on lance une démo),
     # Qdrant va paramétrer l'espace hybride automatique
     ds = QdrantDocumentStore(
         url=settings.qdrant_url,

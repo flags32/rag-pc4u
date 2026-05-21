@@ -4,14 +4,15 @@ from typing import Any, List, Optional
 
 import structlog
 import uvicorn
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # Import des composants Haystack / Qdrant et configurations
-from rag_pc4u.core.components import execute_query
+from rag_pc4u.retrieval.pipeline import build_hybrid_rag_pipeline
 from rag_pc4u.core.config import settings
 from rag_pc4u.core.logging import configure_logging
+from rag_pc4u.retrieval.services import answer
 
 logger = structlog.get_logger(__name__)
 
@@ -19,6 +20,7 @@ logger = structlog.get_logger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     configure_logging()
+    app.state.query_pipeline = build_hybrid_rag_pipeline()
     logger.info(
         "api.startup",
         client_id=settings.client_id,
@@ -107,7 +109,8 @@ async def list_models():
 
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(
-        request: ChatCompletionRequest,
+        request: Request, # <--- Récupère l'objet Request de FastAPI
+        completion_request: ChatCompletionRequest, # renommé pour clarté
         x_client_id: Optional[str] = Header(None, alias="X-Client-Id")
 ):
     """
@@ -115,7 +118,7 @@ async def chat_completions(
     extrait la question, exécute le pipeline Haystack/Qdrant et renvoie la réponse.
     """
     # 1. Extraction du dernier message de l'utilisateur
-    user_messages = [msg.content for msg in request.messages if msg.role == "user"]
+    user_messages = [msg.content for msg in completion_request.messages if msg.role == "user"]
     if not user_messages:
         raise HTTPException(status_code=400, detail="Aucun message utilisateur trouvé.")
 
@@ -126,21 +129,19 @@ async def chat_completions(
     client_id = x_client_id or settings.client_id
 
     try:
-        logger.info("api.rag.execute", client_id=client_id, model_requested=request.model)
+        pipeline = request.app.state.query_pipeline
+        logger.info("api.rag.execute", client_id=client_id, model_requested=completion_request.model)
 
         # 3. Appel de ton pipeline Haystack (Dense + Sparse + Qdrant + Ollama)
-        rag_response = execute_query(question=last_question, client_id=client_id)
+        rag_response = answer(query=last_question, client_id=client_id, pipeline=pipeline)
 
         # 4. Formatage du retour au format OpenAI attendu par Open WebUI
         return ChatCompletionResponse(
-            model=request.model,
+            model=completion_request.model,
             choices=[
                 ChatCompletionResponseChoice(
                     index=0,
-                    message=ChatMessage(
-                        role="assistant",
-                        content=rag_response.answer
-                    )
+                    message=ChatMessage(role="assistant", content=rag_response.answer)
                 )
             ]
         )
