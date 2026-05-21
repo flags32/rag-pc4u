@@ -16,9 +16,9 @@ def test_ingestion():
     pipeline = build_indexing_pipeline()
 
     results = pipeline.run({
-        "converter": {"sources": ["/home/user/Documents/projet rag/tests/test1",
-                                  "/home/user/Documents/projet rag/tests/test2",
-                                  "/home/user/Documents/projet rag/tests/test3"]},
+        "converter": {"sources": ["/home/user/Documents/projet_rag/tests/test1",
+                                  "/home/user/Documents/projet_rag/tests/test2",
+                                  "/home/user/Documents/projet_rag/tests/test3"]},
         "enricher": {"client_id": "client_demo"}
     })
 

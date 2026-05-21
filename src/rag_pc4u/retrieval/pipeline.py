@@ -7,6 +7,7 @@ from haystack_integrations.components.generators.ollama import OllamaGenerator
 from haystack_integrations.components.retrievers.qdrant import QdrantHybridRetriever
 from rag_pc4u.core.components import get_document_store
 from rag_pc4u.core.config import settings
+from rag_pc4u.core.custom_components.enricher import MetadataEnricher
 
 
 def build_hybrid_rag_pipeline() -> Pipeline:

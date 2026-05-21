@@ -28,10 +28,10 @@ def init_database():
     # Qdrant va paramétrer l'espace hybride automatique
     ds = QdrantDocumentStore(
         url=settings.qdrant_url,
-        index=settings.collection_name,
+        index=settings.collection_name,# probleme à ce niveau car il ne peux pas sortir donc securisé mais pas trop non plus
         embedding_dim=settings.embedding_dim,
         use_sparse_embeddings=True, # Active la configuration du Named Vector "sparse-text" dans Qdrant
-        recreate_index=True         # ATTENTION: À passer à False en production pour ne pas vider tes données
+        recreate_index=True         # ATTENTION: À passer à False en production pour ne pas vider les données
     )
 
     logger.info("Collection initialisée avec succès !", total_docs=ds.count_documents())
