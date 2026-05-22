@@ -126,7 +126,7 @@ async def chat_completions(
 
     # 2. Gestion du multi-tenant (Cloisonnement client)
     # Reçoit le client_id depuis les headers, sinon se replie sur la config de démo
-    client_id = x_client_id
+    client_id =x_client_id if x_client_id is not None else settings.client_id
 
     try:
         pipeline = request.app.state.query_pipeline

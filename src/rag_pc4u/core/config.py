@@ -10,13 +10,12 @@ class Settings(BaseSettings):
     )
 
     # Ollama
-    ollama_host: str = "http://192.168.204.8:11434" #modifier en fonction
+    ollama_host: str = "http://192.168.204.21:11434" #modifier en fonction
     ollama_embed_model: str = "bge-m3"
-    ollama_llm_model: str = "qwen2.5:7b"
+    ollama_llm_model: str = "mistral-small:22b"
 
-    # Qdrant
-    # Qdrant pointe vers ton LXC Proxmox
-    qdrant_host: str = "192.168.204.6"
+    # Qdrant pointe vers le LXC Proxmox
+    qdrant_host: str = "http://192.168.204.20"
     qdrant_port: int = 6333
     embedding_dim: int = 1024  # dimension de bge-m3, utilisée à la création de la collection
 
@@ -31,6 +30,7 @@ class Settings(BaseSettings):
 
     # Cloisonnement client
     client_id: str = "client_demo"
+    #version modifiable par client à tester  collection_name: str = f"documents_{client_id}"
     collection_name: str = "documents_client_demo"# à modifier en fonction du client pour l'instant ce n'est pas configurable et c'est de la demo
     # SMB
     smb_host: str = ""
