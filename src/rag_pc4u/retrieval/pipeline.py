@@ -25,6 +25,7 @@ def build_hybrid_rag_pipeline() -> Pipeline:
     pipeline.add_component(
         "sparse_embedder",
         FastembedSparseTextEmbedder(model="Qdrant/bm25"),
+        providers=["CPUExecutionProvider"]
     )
 
     # Retriever Hybride unifié

@@ -33,7 +33,8 @@ def build_indexing_pipeline() -> Pipeline:
     pipeline.add_component(
         "sparse_embedder",
         FastembedSparseDocumentEmbedder(
-            model="Qdrant/bm25"
+            model="Qdrant/bm25",
+            providers=["CPUExecutionProvider"]
         )
     )
 
