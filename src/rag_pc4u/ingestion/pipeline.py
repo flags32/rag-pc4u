@@ -1,7 +1,9 @@
 from haystack import Pipeline
 from haystack.components.converters.txt import TextFileToDocument
+from haystack.components.embedders import SentenceTransformersDocumentEmbedder
 from haystack.components.preprocessors import DocumentCleaner, DocumentSplitter
-from haystack_integrations.components.embedders.fastembed import FastembedSparseDocumentEmbedder
+from haystack_integrations.components.embedders.fastembed import FastembedSparseDocumentEmbedder, \
+    FastembedDocumentEmbedder
 from haystack_integrations.components.embedders.ollama import OllamaDocumentEmbedder
 from haystack.components.writers import DocumentWriter
 from rag_pc4u.core.components import get_document_store
@@ -26,15 +28,16 @@ def build_indexing_pipeline() -> Pipeline:
     pipeline.add_component("enricher", MetadataEnricher())
 
     # 3. Vectorisation (Hybride)
-    pipeline.add_component("dense_embedder", OllamaDocumentEmbedder(
-        url=settings.ollama_host,
-        model=settings.ollama_embed_model
+    pipeline.add_component("dense_embedder", FastembedDocumentEmbedder(
+        model="BAAI/bge-base-en-v1.5",
+        parallel=1
     ))
+
     pipeline.add_component(
         "sparse_embedder",
         FastembedSparseDocumentEmbedder(
             model="Qdrant/bm25",
-            providers=["CPUExecutionProvider"]
+            parallel=1
         )
     )
 

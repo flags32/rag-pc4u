@@ -11,13 +11,13 @@ class Settings(BaseSettings):
 
     # Ollama
     ollama_host: str = "http://192.168.204.21:11434" #modifier en fonction
-    ollama_embed_model: str = "bge-m3"
-    ollama_llm_model: str = "mistral-small:22b"
+    ollama_embed_model: str = "bge-base-en-v1.5"
+    ollama_llm_model: str = "qwen2.5:32b"
 
     # Qdrant pointe vers le LXC Proxmox
     qdrant_host: str = "http://192.168.204.20"
     qdrant_port: int = 6333
-    embedding_dim: int = 1024  # dimension de bge-m3, utilisée à la création de la collection
+    embedding_dim: int = 768  # dimension de bge-base-en-v1.5, utilisée à la création de la collection
 
     # RAG
     top_k: int = 5  # nombre de chunks remontés par le retriever

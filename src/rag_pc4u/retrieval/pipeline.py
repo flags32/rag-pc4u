@@ -1,13 +1,15 @@
 """Pipeline module Rag PC4U pour retrieval"""
 from haystack import Pipeline
 from haystack.components.builders import PromptBuilder
-from haystack_integrations.components.embedders.fastembed import FastembedSparseTextEmbedder
-from haystack_integrations.components.embedders.ollama import OllamaTextEmbedder
+from haystack.components.embedders import SentenceTransformersDocumentEmbedder
+from haystack_integrations.components.embedders.fastembed import FastembedSparseTextEmbedder, FastembedDocumentEmbedder
+from haystack_integrations.components.embedders.fastembed import FastembedTextEmbedder
 from haystack_integrations.components.generators.ollama import OllamaGenerator
 from haystack_integrations.components.retrievers.qdrant import QdrantHybridRetriever
 from rag_pc4u.core.components import get_document_store
 from rag_pc4u.core.config import settings
 from rag_pc4u.core.custom_components.enricher import MetadataEnricher
+from rag_pc4u.retrieval.prompts import RAG_SYSTEM_PROMPT
 
 
 def build_hybrid_rag_pipeline() -> Pipeline:
@@ -15,17 +17,15 @@ def build_hybrid_rag_pipeline() -> Pipeline:
     ds = get_document_store()
     pipeline = Pipeline()
 
-    # Branche Dense (Sémantique via Ollama)
-    pipeline.add_component(
-        "dense_embedder",
-        OllamaTextEmbedder(url=settings.ollama_host, model=settings.ollama_embed_model),
-    )
-
+    # Branche Dense (Sémantique via Fastembed)
+    pipeline.add_component("dense_embedder", FastembedTextEmbedder(
+        model = "BAAI/bge-base-en-v1.5",
+        parallel=1
+    ))
     # Branche Sparse (Mots-clés via Fastembed)
     pipeline.add_component(
         "sparse_embedder",
-        FastembedSparseTextEmbedder(model="Qdrant/bm25"),
-        providers=["CPUExecutionProvider"]
+        FastembedSparseTextEmbedder(model="Qdrant/bm25", parallel=1)
     )
 
     # Retriever Hybride unifié
@@ -35,18 +35,8 @@ def build_hybrid_rag_pipeline() -> Pipeline:
     )
 
     # Génération
-    template = """
-    Tu es un assistant virtuel intelligent de pc4u. Réponds à la question en te basant uniquement sur le contexte fourni.
-    Si tu ne trouves pas la réponse dans le contexte, dis poliment que tu ne sais pas.Et commence forcement toute tes phrases par pc4u la pour vous servir.
+    template = RAG_SYSTEM_PROMPT
 
-    Contexte :
-    {% for doc in documents %}
-      {{ doc.content }}
-    {% endfor %}
-
-    Question : {{ query }}
-    Réponse :
-    """
     pipeline.add_component("prompt_builder", PromptBuilder(template=template))
     pipeline.add_component(
         "llm",
