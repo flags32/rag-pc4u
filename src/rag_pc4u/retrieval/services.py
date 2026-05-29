@@ -1,5 +1,3 @@
-"""Services module Rag PC4U pour retrieval"""
-# retrieval/service.py
 import structlog
 from haystack import Pipeline
 from rag_pc4u.core.models import QueryResponse, Source
@@ -15,7 +13,6 @@ def answer(query: str, client_id: str, pipeline: Pipeline) -> QueryResponse:
 
     runtime_filters = filter_for(client_id=client_id)
 
-    # On exécute le pipeline PASSE EN PARAMÈTRE (déjà instancié)
     results = pipeline.run({
         "dense_embedder": {"text": query},
         "sparse_embedder": {"text": query},
@@ -23,11 +20,9 @@ def answer(query: str, client_id: str, pipeline: Pipeline) -> QueryResponse:
         "prompt_builder": {"query": query},
     })
 
-    # Parsing sécurisé de la réponse LLM
     replies = results.get("llm", {}).get("replies", [])
-    answer = replies[0] if replies else "Désolé, je n'ai pas pu générer de réponse."
+    reply_text = replies[0] if replies else "Désolé, je n'ai pas pu générer de réponse."
 
-    # Conversion des documents Haystack vers ton modèle Pydantic 'Source'
     retrieved_docs = results.get("hybrid_retriever", {}).get("documents", [])
     sources = [
         Source(
@@ -39,11 +34,11 @@ def answer(query: str, client_id: str, pipeline: Pipeline) -> QueryResponse:
     ]
 
     return QueryResponse(
-        answer=answer,
+        answer=reply_text,
         sources=sources,
         metadata={
             "client_id": client_id,
             "llm_model": settings.ollama_llm_model,
-            "docs_retrieved": len(sources)
+            "docs_retrieved": len(sources),
         },
     )

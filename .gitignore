@@ -27,3 +27,5 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+.ingestion_state.json

@@ -17,7 +17,7 @@ class LocalDirectoryScanner:
     """
 
     def __init__(self, allowed_extensions: List[str] = None):
-        self.allowed_extensions = allowed_extensions or [".txt", ".pdf", ".md"]
+        self.allowed_extensions = allowed_extensions or ["",".txt", ".pdf", ".md"]
 
     @component.output_types(paths=List[Path])
     def run(self, directory_path: str):

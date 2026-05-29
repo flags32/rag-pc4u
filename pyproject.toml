@@ -8,7 +8,7 @@ license = { text = "Proprietary" }
 
 dependencies = [
     # Framework RAG
-    "haystack-ai>=2.9.0",
+    "haystack-ai>=2.3.0",
     "qdrant-haystack>=5.0.0",   # tire qdrant-client en transitive
     # LLM + Embeddings via Ollama (intégration Haystack 2.x)
     "ollama-haystack>=2.0.0",
@@ -39,6 +39,8 @@ dependencies = [
     "tenacity>=9.0.0",
     "structlog>=24.4.0",
     "fastembed-haystack>=2.3.0",
+    "torch>=2.12.0",
+    "sentence-transformers>=3.0.0",
 ]
 
 [dependency-groups]

@@ -11,13 +11,13 @@ class Settings(BaseSettings):
 
     # Ollama
     ollama_host: str = "http://192.168.204.21:11434" #modifier en fonction
-    ollama_embed_model: str = "bge-base-en-v1.5"
-    ollama_llm_model: str = "qwen2.5:32b"
+    ollama_embed_model: str = "bge-m3:latest"
+    ollama_llm_model: str = "qwen2.5:7b"
 
     # Qdrant pointe vers le LXC Proxmox
-    qdrant_host: str = "http://192.168.204.20"
+    qdrant_host: str = "192.168.204.20"
     qdrant_port: int = 6333
-    embedding_dim: int = 768  # dimension de bge-base-en-v1.5, utilisée à la création de la collection
+    embedding_dim: int = 1024  # dimension de bge-base-en-v1.5, utilisée à la création de la collection
 
     # RAG
     top_k: int = 5  # nombre de chunks remontés par le retriever
@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     @property#proprety est utile pour tout ce qui est url ou autre en python car on peut l'appeler directement sans faire un get'
     def qdrant_url(self) -> str:
         return f"http://{self.qdrant_host}:{self.qdrant_port}"
+    """
+    @property
+    def collection_name(self) -> str:
+        return f"documents_{self.client_id}"
+        """
+    # la seule chose secure est que le client_id ne sorte pas de la collection cependant cela peut etre problematique si un client veut sortir de sa collection'
 
 
 settings = Settings()

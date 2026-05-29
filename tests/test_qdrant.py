@@ -3,7 +3,7 @@ from haystack.dataclasses import Document
 from haystack_integrations.document_stores.qdrant import QdrantDocumentStore
 
 # REMPLACE PAR L'IP DE TON CONTENEUR LXC PROXMOX
-IP_PROXMOX = "192.168.204.6"
+IP_PROXMOX = "192.168.204.20"
 
 logger = structlog.get_logger(__name__)
 
