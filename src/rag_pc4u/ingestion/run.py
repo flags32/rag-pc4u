@@ -66,7 +66,7 @@ def run_folder_ingestion(folder_path: str, client_id: str = "client_demo"):
     configure_logging()
     logger.info("Démarrage de l'ingestion incrémentale", path=folder_path, client_id=client_id)
 
-    # 1. Scanner le répertoire (txt, md, pdf — pas de chaîne vide qui attrape tout)
+    # 1. Scanner le répertoire (txt, md, pdf )
     scanner = LocalDirectoryScanner(allowed_extensions=["",".txt", ".md", ".pdf"])
     scan_results = scanner.run(directory_path=folder_path)
     current_files: list[Path] = scan_results["paths"]
@@ -136,4 +136,5 @@ if __name__ == "__main__":
         client = "client_demo"
 
     run_folder_ingestion(target_folder, client_id=client)
+
 

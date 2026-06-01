@@ -47,8 +47,7 @@ async def health() -> dict[str, Any]:
     """
     Health check complet.
 
-    Avant : retournait toujours 'ok' sans rien verifier.
-    Maintenant : ping reel sur Qdrant et Ollama.
+    ping reel sur Qdrant et Ollama.
     Le statut global passe a 'degraded' si l'un des deux est KO.
     """
     qdrant_status = await _ping_qdrant()

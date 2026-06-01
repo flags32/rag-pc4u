@@ -32,15 +32,25 @@ class MetadataEnricher:
         enriched = []
         for doc in documents:
             # On ne mutate pas l'objet original
-            new_meta = {**doc.meta, "client_id": client_id}
+            # file_path est injecté explicitement pour garantir son existence dans meta
+            # (les convertisseurs Haystack ne le mettent pas tous de façon identique)
+            new_meta = {
+                **doc.meta,
+                "client_id": client_id,
+                "file_path": doc.meta.get("file_path") or doc.meta.get("source") or "",
+            }
+            # On ne passe PAS id=doc.id : l'ID doit être recalculé par Haystack
+            # sur le nouveau meta final, sinon l'ID est incohérent avec le contenu stocké
+            # ce qui cause des collisions silencieuses dans Qdrant
             enriched.append(
                 Document(
                     content=doc.content,
                     meta=new_meta,
-                    id=doc.id,
                 )
             )
         return {"documents": enriched}
 
     def __repr__(self):
-        return f"MetadataEnricher(client_id='{self.client_id}')"
+        return "MetadataEnricher()"
+
+

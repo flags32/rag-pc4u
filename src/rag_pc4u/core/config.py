@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     # Ollama
     ollama_host: str = "http://192.168.204.21:11434" #modifier en fonction
     ollama_embed_model: str = "bge-m3:latest"
-    ollama_llm_model: str = "qwen2.5:7b"
+    ollama_llm_model: str = "qwen2.5:14b"
 
     # Qdrant pointe vers le LXC Proxmox
     qdrant_host: str = "192.168.204.20"

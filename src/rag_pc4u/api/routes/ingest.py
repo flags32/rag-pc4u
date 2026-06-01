@@ -11,6 +11,7 @@ ALLOWED_TYPES: dict[str, str] = {
     "text/plain": ".txt",
     "text/markdown": ".md",
     "application/pdf": ".pdf",
+    "application/octet-stream": "",
 }
 
 @router.post("/ingest")
@@ -33,9 +34,6 @@ async def ingest_file(file: UploadFile = File(...), client_id: str = "client_dem
                    f"Types acceptés : {', '.join(ALLOWED_TYPES)}",
         )
 
-    # 2. CORRECTION BUG 2 : suffix = vraie extension du fichier uploadé.
-    # Avant : suffix=".txt" pour tout, donc un PDF devenait tmpXXX.txt
-    # → FileTypeRouter le routait vers txt_converter → résultat vide/illisible.
     suffix = ALLOWED_TYPES[mime_base]
 
     tmp_path = None
@@ -44,8 +42,6 @@ async def ingest_file(file: UploadFile = File(...), client_id: str = "client_dem
             shutil.copyfileobj(file.file, tmp)
             tmp_path = Path(tmp.name)
 
-        # 3. CORRECTION BUG 1 : le point d'entrée du pipeline est "router",
-        # pas "converter" (qui n'existe plus depuis l'ajout du FileTypeRouter).
         pipeline = build_indexing_pipeline()
         results = pipeline.run({
             "router": {"sources": [tmp_path]},
