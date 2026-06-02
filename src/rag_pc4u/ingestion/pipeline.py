@@ -3,6 +3,7 @@ from haystack.components.converters.txt import TextFileToDocument
 from haystack.components.preprocessors import DocumentCleaner, DocumentSplitter
 from haystack.components.routers import FileTypeRouter
 from haystack.components.writers import DocumentWriter
+from haystack.components.joiners import DocumentJoiner
 
 from haystack_integrations.components.embedders.fastembed import (
     FastembedSparseDocumentEmbedder,
@@ -13,7 +14,6 @@ from haystack_integrations.components.embedders.ollama import OllamaDocumentEmbe
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import (
     PdfPipelineOptions,
-    TesseractOcrOptions,
 )
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling_haystack.converter import DoclingConverter
@@ -27,17 +27,18 @@ from rag_pc4u.core.custom_components.extensionless import ExtensionlessToDocumen
 
 def _make_docling_converter() -> DoclingConverter:
     """
-    Construit un DocumentConverter Docling avec Tesseract OCR activé.
-    - do_ocr=True       : OCR activé sur les pages où le texte est absent/rare
-    - lang=["auto"]     : détection automatique de la langue (fr, en, etc.)
-    - force_full_page_ocr=False : OCR seulement là où c'est nécessaire (perf)
-    """
-    ocr_options = TesseractOcrOptions(lang=["auto"])
+Construit un DocumentConverter Docling avec Tesseract OCR activé.
+- do_ocr=False       : OCR désactivé par défaut
+- lang=["auto"]     : détection automatique de la langue (fr, en, etc.)
+- force_full_page_ocr=False : OCR seulement là où c'est nécessaire (perf)
+"""
+
+    #ocr_options = TesseractOcrOptions(lang=["auto"])
 
     pdf_pipeline_options = PdfPipelineOptions(
-        do_ocr=True,
-        force_full_page_ocr=False,   # True = force sur toutes les pages (PDFs 100% scannés)
-        ocr_options=ocr_options,
+        do_ocr=False,
+        #force_full_page_ocr=False,
+        #ocr_options=ocr_options,
     )
 
     doc_converter = DocumentConverter(
@@ -50,44 +51,41 @@ def _make_docling_converter() -> DoclingConverter:
 
     return DoclingConverter(
         converter=doc_converter,
-        export_type="doc_chunks",          # chunking natif Docling (respecte le layout)
-        chunker=HybridChunker(             # chunker hybride : sémantique + structure
-            tokenizer=settings.ollama_embed_model,
+        export_type="doc_chunks",
+        chunker=HybridChunker(
+            tokenizer="BAAI/bge-m3",  # identifiant HuggingFace correct
             max_tokens=settings.chunk_size,
         ),
     )
 
 
 def build_indexing_pipeline() -> Pipeline:
-    """
-    Pipeline d'ingestion hybride (Dense + Sparse).
-
-    Branches :
-      - application/pdf  → DoclingConverter (layout + Tesseract OCR + chunking intégré)
-      - text/plain       → TextFileToDocument → cleaner → splitter
-      - unclassified     → ExtensionlessToDocument → cleaner → splitter
-    Les trois branches convergent vers enricher → embedders → writer.
-    """
     ds = get_document_store()
     pipeline = Pipeline()
 
     # ── Routage ──────────────────────────────────────────────────────────────
     pipeline.add_component(
         "router",
-        FileTypeRouter(mime_types=["text/plain", "application/pdf"]),
+        FileTypeRouter(mime_types=["text/plain", "application/pdf", "text/markdown"]),
     )
 
     # ── Branche PDF : Docling ─────────────────────────────────────────────────
-    # Docling chunk nativement → pas besoin de cleaner/splitter pour les PDFs
     pipeline.add_component("pdf_converter", _make_docling_converter())
 
-    # ── Branche TXT ──────────────────────────────────────────────────────────
+    # ── Branche TXT ───────────────────────────────────────────────────────────
     pipeline.add_component("txt_converter", TextFileToDocument())
+
+    # ── Branche MD ────────────────────────────────────────────────────────────
+    pipeline.add_component("md_converter", TextFileToDocument())
 
     # ── Branche sans extension ────────────────────────────────────────────────
     pipeline.add_component("extensionless_converter", ExtensionlessToDocument())
 
-    # ── Nettoyage + Split (txt & sans extension uniquement) ───────────────────
+    # ── Joiners ───────────────────────────────────────────────────────────────
+    pipeline.add_component("joiner_txt", DocumentJoiner(join_mode="concatenate"))
+    pipeline.add_component("joiner_main", DocumentJoiner(join_mode="concatenate"))
+
+    # ── Nettoyage + Split ─────────────────────────────────────────────────────
     pipeline.add_component("cleaner", DocumentCleaner())
     pipeline.add_component(
         "splitter",
@@ -98,7 +96,7 @@ def build_indexing_pipeline() -> Pipeline:
         ),
     )
 
-    # ── Enrichissement tenant ─────────────────────────────────────────────────
+    # ── Enrichissement ────────────────────────────────────────────────────────
     pipeline.add_component("enricher", MetadataEnricher())
 
     # ── Embeddings hybrides ───────────────────────────────────────────────────
@@ -117,23 +115,29 @@ def build_indexing_pipeline() -> Pipeline:
     # ── Stockage ──────────────────────────────────────────────────────────────
     pipeline.add_component("writer", DocumentWriter(document_store=ds))
 
-    # ── CÂBLAGE ───────────────────────────────────────────────────────────────
+    # ── CÂBLAGE CORRIGÉ ───────────────────────────────────────────────────────
 
-    # Routage vers les convertisseurs
-    pipeline.connect("router.application/pdf", "pdf_converter.paths")
+    # 1. Routage vers les convertisseurs (1 seule connexion par port d'entrée d'un composant)
+    pipeline.connect("router.application/pdf", "pdf_converter.sources")
     pipeline.connect("router.text/plain", "txt_converter.sources")
+    pipeline.connect("router.text/markdown", "md_converter.sources")
     pipeline.connect("router.unclassified", "extensionless_converter.sources")
 
-    # PDF → directement vers enricher (Docling a déjà chunké)
-    pipeline.connect("pdf_converter.documents", "enricher.documents")
+    # 2. Le Joiner accepte plusieurs connexions sur son port unique 'documents'
+    pipeline.connect("txt_converter.documents", "joiner_txt.documents")
+    pipeline.connect("md_converter.documents", "joiner_txt.documents")
+    pipeline.connect("extensionless_converter.documents", "joiner_txt.documents")
 
-    # TXT + sans extension → cleaner → splitter → enricher
-    pipeline.connect("txt_converter.documents", "cleaner.documents")
-    pipeline.connect("extensionless_converter.documents", "cleaner.documents")
+    # 3. Traitement de la branche de texte unifiée
+    pipeline.connect("joiner_txt.documents", "cleaner.documents")
     pipeline.connect("cleaner.documents", "splitter.documents")
-    pipeline.connect("splitter.documents", "enricher.documents")
 
-    # Tronc commun
+    # 4. Fusion finale : Chunks PDF (via Docling) + Chunks textuels
+    pipeline.connect("pdf_converter.documents", "joiner_main.documents")
+    pipeline.connect("splitter.documents", "joiner_main.documents")
+
+    # 5. Tronc commun
+    pipeline.connect("joiner_main.documents", "enricher.documents")
     pipeline.connect("enricher.documents", "dense_embedder.documents")
     pipeline.connect("dense_embedder.documents", "sparse_embedder.documents")
     pipeline.connect("sparse_embedder.documents", "writer.documents")

@@ -43,7 +43,7 @@ dependencies = [
     "torchvision==0.20.1",
     "sentence-transformers>=3.0.0",
     "docling-haystack>=1.0.0",
-    "transformers==4.48.3",
+    "transformers>=4.50.0",
     "docling-slim>=2.96.1",
 ]
 

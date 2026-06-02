@@ -1,5 +1,7 @@
 """
-gestion incrémentale des documents.Un document modifié remplace ses anciens chunks.Un document supprimé est désindexé.
+Gestion incrémentale des documents.
+Un document modifié remplace ses anciens chunks.
+Un document supprimé est désindexé.
 """
 
 import hashlib
@@ -15,12 +17,11 @@ from rag_pc4u.ingestion.sources import LocalDirectoryScanner
 
 logger = structlog.get_logger(__name__)
 
-# Fichier d'état local : stocke {chemin_absolu: sha256} pour détecter les modifications
-STATE_FILE = Path(".ingestion_state.json")
+# ✅ Fix #3 : ancré au dossier du script, indépendant du CWD
+STATE_FILE = Path(__file__).parent / ".ingestion_state.json"
 
 
 def _load_state() -> dict[str, str]:
-    """Charge l'état précédent depuis le fichier JSON."""
     if STATE_FILE.exists():
         try:
             return json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -30,12 +31,10 @@ def _load_state() -> dict[str, str]:
 
 
 def _save_state(state: dict[str, str]) -> None:
-    """Persiste le nouvel état sur disque."""
     STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
 def _sha256(path: Path) -> str:
-    """Calcule le hash SHA-256 d'un fichier."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
@@ -44,9 +43,6 @@ def _sha256(path: Path) -> str:
 
 
 def _delete_chunks_for_source(source_path: str, client_id: str) -> int:
-    """
-    Supprime tous les chunks Qdrant associés à un fichier source et un client_id.
-    """
     ds = get_document_store()
     filters = {
         "operator": "AND",
@@ -66,8 +62,7 @@ def run_folder_ingestion(folder_path: str, client_id: str = "client_demo"):
     configure_logging()
     logger.info("Démarrage de l'ingestion incrémentale", path=folder_path, client_id=client_id)
 
-    # 1. Scanner le répertoire (txt, md, pdf )
-    scanner = LocalDirectoryScanner(allowed_extensions=["",".txt", ".md", ".pdf"])
+    scanner = LocalDirectoryScanner(allowed_extensions=["", ".txt", ".md", ".pdf"])
     scan_results = scanner.run(directory_path=folder_path)
     current_files: list[Path] = scan_results["paths"]
 
@@ -75,13 +70,11 @@ def run_folder_ingestion(folder_path: str, client_id: str = "client_demo"):
         logger.warning("Aucun fichier trouvé dans le répertoire.")
         return
 
-    # 2. Charger l'état précédent
     previous_state = _load_state()
     new_state: dict[str, str] = {}
-    files_to_index: list[Path] = []
+    files_to_index: list[Path] = []  # ✅ type hint clair
     files_deleted: list[str] = []
 
-    # 3. Déterminer les fichiers nouveaux ou modifiés
     current_paths_str = {str(p.resolve()) for p in current_files}
 
     for file_path in current_files:
@@ -92,22 +85,20 @@ def run_folder_ingestion(folder_path: str, client_id: str = "client_demo"):
         previous_hash = previous_state.get(abs_path)
         if previous_hash is None:
             logger.info("incremental.new_file", path=abs_path)
-            files_to_index.append(abs_path)  # <-- Utilise abs_path au lieu de file_path
+            files_to_index.append(Path(abs_path))  # ✅ Fix #1 : Path, pas str
         elif previous_hash != current_hash:
             logger.info("incremental.modified_file", path=abs_path)
             _delete_chunks_for_source(abs_path, client_id)
-            files_to_index.append(abs_path)  # <-- Utilise abs_path au lieu de file_path
+            files_to_index.append(Path(abs_path))  # ✅ Fix #1 : Path, pas str
         else:
             logger.debug("incremental.unchanged_file", path=abs_path)
 
-    # 4. Détecter les fichiers supprimés
     for abs_path in previous_state:
         if abs_path not in current_paths_str:
             logger.info("incremental.deleted_file", path=abs_path)
             _delete_chunks_for_source(abs_path, client_id)
             files_deleted.append(abs_path)
 
-    # 5. Indexer les fichiers nouveaux/modifiés
     if files_to_index:
         logger.info("Indexation des fichiers modifiés/nouveaux", count=len(files_to_index))
         pipeline = build_indexing_pipeline()
@@ -123,7 +114,6 @@ def run_folder_ingestion(folder_path: str, client_id: str = "client_demo"):
     else:
         logger.info("Aucun fichier à réindexer — base à jour.")
 
-    # 6. Sauvegarder le nouvel état
     _save_state(new_state)
 
 
