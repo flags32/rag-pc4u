@@ -1,49 +1,4 @@
 services:
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: rag-qdrant
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    restart: unless-stopped
-    networks:
-      - ragnet
-
-  ollama:
-    image: ollama/ollama:latest
-    container_name: rag-ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    restart: unless-stopped
-    networks:
-      - ragnet
-
-  # NOUVEAU : Ce service télécharge automatiquement tes modèles au démarrage
-  ollama-model-puller:
-    image: ollama/ollama:latest
-    container_name: rag-ollama-puller
-    environment:
-      - OLLAMA_HOST=http://ollama:11434
-    entrypoint: /bin/sh
-    command:
-      - "-c"
-      - |
-        echo "Attente du serveur Ollama..."
-        while ! ollama list > /dev/null 2>&1; do sleep 2; done
-        echo "Téléchargement du modèle d'embedding (bge-m3)..."
-        ollama pull bge-m3:latest
-        echo "Téléchargement du LLM (qwen2.5:14b)... Cela peut prendre du temps."
-        ollama pull qwen2.5:14b
-        echo "Tous les modèles sont prêts !"
-    depends_on:
-      - ollama
-    networks:
-      - ragnet
-
   api:
     build:
       context: ..
@@ -54,24 +9,11 @@ services:
     env_file:
       - ../.env
     environment:
-      # Pydantic va automatiquement mapper ces variables majuscules avec ton fichier config.py
-      OLLAMA_HOST: http://ollama:11434
+      # On injecte les IPs de tes LXC Proxmox pour surcharger proprement la configuration
+      OLLAMA_HOST: "http://192.168.204.21:11434"
       OLLAMA_EMBED_MODEL: "bge-m3:latest"
       OLLAMA_LLM_MODEL: "qwen2.5:14b"
-      QDRANT_HOST: qdrant
+
+      QDRANT_HOST: "192.168.204.20"
       QDRANT_PORT: "6333"
-    depends_on:
-      - qdrant
-      - ollama
-      - ollama-model-puller
     restart: unless-stopped
-    networks:
-      - ragnet
-
-volumes:
-  qdrant_data:
-  ollama_data:
-
-networks:
-  ragnet:
-    driver: bridge
