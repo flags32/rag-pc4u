@@ -59,7 +59,7 @@ def build_hybrid_rag_pipeline() -> Pipeline:
         system_prompt=RAG_SYSTEM_PROMPT,
     ))
 
-    pipeline.add_component("ranker", SimpleBGEReranker(top_k=2))
+    pipeline.add_component("ranker", SimpleBGEReranker(top_k=5))
 
     """connexion des composants"""
 
