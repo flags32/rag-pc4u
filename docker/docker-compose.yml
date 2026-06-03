@@ -21,14 +21,28 @@ services:
     restart: unless-stopped
     networks:
       - ragnet
-    # GPU NVIDIA (décommenter si dispo dans le LXC) :
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+
+  # NOUVEAU : Ce service télécharge automatiquement tes modèles au démarrage
+  ollama-model-puller:
+    image: ollama/ollama:latest
+    container_name: rag-ollama-puller
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: /bin/sh
+    command:
+      - "-c"
+      - |
+        echo "Attente du serveur Ollama..."
+        while ! ollama list > /dev/null 2>&1; do sleep 2; done
+        echo "Téléchargement du modèle d'embedding (bge-m3)..."
+        ollama pull bge-m3:latest
+        echo "Téléchargement du LLM (qwen2.5:14b)... Cela peut prendre du temps."
+        ollama pull qwen2.5:14b
+        echo "Tous les modèles sont prêts !"
+    depends_on:
+      - ollama
+    networks:
+      - ragnet
 
   api:
     build:
@@ -40,13 +54,16 @@ services:
     env_file:
       - ../.env
     environment:
-      # Overrides pour le réseau Docker (les services se voient par leur nom)
+      # Pydantic va automatiquement mapper ces variables majuscules avec ton fichier config.py
       OLLAMA_HOST: http://ollama:11434
+      OLLAMA_EMBED_MODEL: "bge-m3:latest"
+      OLLAMA_LLM_MODEL: "qwen2.5:14b"
       QDRANT_HOST: qdrant
       QDRANT_PORT: "6333"
     depends_on:
       - qdrant
       - ollama
+      - ollama-model-puller
     restart: unless-stopped
     networks:
       - ragnet
