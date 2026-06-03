@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     embedding_dim: int = 1024  # dimension de bge-base-en-v1.5, utilisée à la création de la collection
 
     # RAG
-    top_k: int = 3  # nombre de chunks remontés par le retriever
+    top_k: int = 20  # nombre de chunks remontés par le retriever
     chunk_size: int = 512  # taille des chunks pour DocumentSplitter
     chunk_overlap: int = 50  # recouvrement entre chunks
 
