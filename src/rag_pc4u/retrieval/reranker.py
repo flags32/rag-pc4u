@@ -5,7 +5,7 @@ from sentence_transformers import CrossEncoder
 
 @component
 class SimpleBGEReranker:
-    def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3", top_k: int = 5):
+    def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3", top_k: int = 10):
         self.model = CrossEncoder(model_name)
         self.top_k = top_k
 

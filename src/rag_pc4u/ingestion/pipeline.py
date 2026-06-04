@@ -1,3 +1,4 @@
+"""Pipeline d'indexation Haystack — ciblé par collection."""
 from haystack import Pipeline
 from haystack.components.converters.txt import TextFileToDocument
 from haystack.components.preprocessors import DocumentCleaner, DocumentSplitter
@@ -10,82 +11,70 @@ from haystack_integrations.components.embedders.fastembed import (
 )
 from haystack_integrations.components.embedders.ollama import OllamaDocumentEmbedder
 
-# Docling
 from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import (
-    PdfPipelineOptions,
-)
+from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling_haystack.converter import DoclingConverter
 from docling.chunking import HybridChunker
 
 from rag_pc4u.core.components import get_document_store
 from rag_pc4u.core.config import settings
+from rag_pc4u.core.custom_components.csv_converter import CSVRowToDocument
+# Import unique depuis custom_components — aucune duplication
 from rag_pc4u.core.custom_components.enricher import MetadataEnricher
 from rag_pc4u.core.custom_components.extensionless import ExtensionlessToDocument
 
 
 def _make_docling_converter() -> DoclingConverter:
-    """
-Construit un DocumentConverter Docling avec Tesseract OCR activé.
-- do_ocr=False       : OCR désactivé par défaut
-- lang=["auto"]     : détection automatique de la langue (fr, en, etc.)
-- force_full_page_ocr=False : OCR seulement là où c'est nécessaire (perf)
-"""
-
-    #ocr_options = TesseractOcrOptions(lang=["auto"])
-
-    pdf_pipeline_options = PdfPipelineOptions(
-        do_ocr=False,
-        #force_full_page_ocr=False,
-        #ocr_options=ocr_options,
-    )
-
+    """Construit le convertisseur Docling pour les PDF."""
+    pdf_pipeline_options = PdfPipelineOptions(do_ocr=False)
     doc_converter = DocumentConverter(
         format_options={
-            InputFormat.PDF: PdfFormatOption(
-                pipeline_options=pdf_pipeline_options,
-            )
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_pipeline_options)
         }
     )
-
     return DoclingConverter(
         converter=doc_converter,
         export_type="doc_chunks",
         chunker=HybridChunker(
-            tokenizer="BAAI/bge-m3",  # identifiant HuggingFace correct
+            tokenizer="BAAI/bge-m3",
             max_tokens=settings.chunk_size,
         ),
     )
 
 
-def build_indexing_pipeline() -> Pipeline:
-    ds = get_document_store()
+def build_indexing_pipeline(collection_name: str) -> Pipeline:
+    """
+    Construit le pipeline d'indexation ciblé sur une collection précise.
+
+    Le document_store utilisé par le writer est instancié pour cette collection.
+    Aucun paramètre client_id — l'isolation est physique (une collection = un espace).
+
+    Args:
+        collection_name : Nom de la collection Qdrant cible.
+    """
+    ds = get_document_store(collection_name)
     pipeline = Pipeline()
 
-    # ── Routage ──────────────────────────────────────────────────────────────
+    # ── Routage et conversion ─────────────────────────────────────────────────
+    # Ajout du type MIME pour le CSV
     pipeline.add_component(
         "router",
-        FileTypeRouter(mime_types=["text/plain", "application/pdf", "text/markdown"]),
+        FileTypeRouter(mime_types=["text/plain", "application/pdf", "text/markdown", "text/csv"]),
     )
-
-    # ── Branche PDF : Docling ─────────────────────────────────────────────────
     pipeline.add_component("pdf_converter", _make_docling_converter())
-
-    # ── Branche TXT ───────────────────────────────────────────────────────────
     pipeline.add_component("txt_converter", TextFileToDocument())
-
-    # ── Branche MD ────────────────────────────────────────────────────────────
     pipeline.add_component("md_converter", TextFileToDocument())
-
-    # ── Branche sans extension ────────────────────────────────────────────────
     pipeline.add_component("extensionless_converter", ExtensionlessToDocument())
+
+    # Ajout du composant CSV
+    pipeline.add_component("csv_converter", CSVRowToDocument())
 
     # ── Joiners ───────────────────────────────────────────────────────────────
     pipeline.add_component("joiner_txt", DocumentJoiner(join_mode="concatenate"))
     pipeline.add_component("joiner_main", DocumentJoiner(join_mode="concatenate"))
 
-    # ── Nettoyage + Split ─────────────────────────────────────────────────────
+    # ── Nettoyage et découpage ────────────────────────────────────────────────
     pipeline.add_component("cleaner", DocumentCleaner())
     pipeline.add_component(
         "splitter",
@@ -96,7 +85,7 @@ def build_indexing_pipeline() -> Pipeline:
         ),
     )
 
-    # ── Enrichissement ────────────────────────────────────────────────────────
+    # ── Enrichissement (file_path, file_name, date_added) ────────────────────
     pipeline.add_component("enricher", MetadataEnricher())
 
     # ── Embeddings hybrides ───────────────────────────────────────────────────
@@ -112,31 +101,34 @@ def build_indexing_pipeline() -> Pipeline:
         FastembedSparseDocumentEmbedder(model="Qdrant/bm25", parallel=None),
     )
 
-    # ── Stockage ──────────────────────────────────────────────────────────────
+    # ── Écriture dans la collection ───────────────────────────────────────────
     pipeline.add_component("writer", DocumentWriter(document_store=ds))
 
-    # ── CÂBLAGE CORRIGÉ ───────────────────────────────────────────────────────
+    # ── Câblage ───────────────────────────────────────────────────────────────
 
-    # 1. Routage vers les convertisseurs (1 seule connexion par port d'entrée d'un composant)
+    # 1. Routage vers les convertisseurs (ajout du CSV)
     pipeline.connect("router.application/pdf", "pdf_converter.sources")
     pipeline.connect("router.text/plain", "txt_converter.sources")
     pipeline.connect("router.text/markdown", "md_converter.sources")
+    pipeline.connect("router.text/csv", "csv_converter.sources")
     pipeline.connect("router.unclassified", "extensionless_converter.sources")
 
-    # 2. Le Joiner accepte plusieurs connexions sur son port unique 'documents'
+    # 2. Collecte des formats textuels purs (qui doivent être découpés)
     pipeline.connect("txt_converter.documents", "joiner_txt.documents")
     pipeline.connect("md_converter.documents", "joiner_txt.documents")
     pipeline.connect("extensionless_converter.documents", "joiner_txt.documents")
 
-    # 3. Traitement de la branche de texte unifiée
+    # 3. Nettoyage et découpage de la branche texte
     pipeline.connect("joiner_txt.documents", "cleaner.documents")
     pipeline.connect("cleaner.documents", "splitter.documents")
 
-    # 4. Fusion finale : Chunks PDF (via Docling) + Chunks textuels
+    # 4. Fusion finale : chunks PDF + chunks texte + chunks CSV
     pipeline.connect("pdf_converter.documents", "joiner_main.documents")
     pipeline.connect("splitter.documents", "joiner_main.documents")
+    # Le CSV rejoint le pipeline ici (bypass du splitter !)
+    pipeline.connect("csv_converter.documents", "joiner_main.documents")
 
-    # 5. Tronc commun
+    # 5. Enrichissement → embeddings → stockage
     pipeline.connect("joiner_main.documents", "enricher.documents")
     pipeline.connect("enricher.documents", "dense_embedder.documents")
     pipeline.connect("dense_embedder.documents", "sparse_embedder.documents")

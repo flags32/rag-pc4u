@@ -1,27 +1,22 @@
-"""Module de routes pour les requêtes de l'API RAG PC4U."""
-
-from fastapi import APIRouter
+"""Routes de requêtes RAG PC4U — compatibilité OpenAI pour Open WebUI."""
+import time
 import structlog
-from haystack import Pipeline
+from typing import List, Optional
 
-# On utilise nos nouveaux schémas et dépendances dédiés à l'API
-from rag_pc4u.api.schemas import HTTPQueryRequest, HTTPQueryResponse
-#from rag_pc4u.api.dependencies import get_client_id_from_key, get_query_pipeline
+from fastapi import APIRouter, HTTPException, Header
+from pydantic import BaseModel
+
 from rag_pc4u.core.config import settings
 from rag_pc4u.retrieval.services import answer
-from pydantic import BaseModel
-from typing import Any, List, Optional
-import time
-from fastapi import HTTPException, Header, Request
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["Query"])
 
 
-# --- MODELES PYDANTIC (sortis de main.py) ---
+# ── Schémas OpenAI ────────────────────────────────────────────────────────────
 
 class ChatMessage(BaseModel):
-    role: str  # "user", "assistant", "system"
+    role: str
     content: str
 
 
@@ -51,16 +46,27 @@ class ChatCompletionResponse(BaseModel):
         super().__init__(**data)
 
 
-# --- ENDPOINTS ---
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/v1/models")
 async def list_models():
-    """Endpoint requis par Open WebUI pour detecter les modeles disponibles."""
+    """Endpoint requis par Open WebUI. Expose les collections comme des modèles."""
+    models_list = []
+
+    # On génère un "modèle" pour chaque collection connue
+    for collection in settings.List_collection:
+        models_list.append({
+            "id": collection,  # C'est ce qui s'affichera dans le sélecteur Open WebUI
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": "pc4u",
+        })
+
     return {
         "object": "list",
-        "data": [
+        "data": models_list if models_list else [
             {
-                "id": "rag-hybrid-pc4u",
+                "id": settings.default_collection,  # Fallback de sécurité
                 "object": "model",
                 "created": int(time.time()),
                 "owned_by": "pc4u",
@@ -71,32 +77,44 @@ async def list_models():
 
 @router.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(
-        request: Request,
         completion_request: ChatCompletionRequest,
-        x_client_id: Optional[str] = Header(None, alias="X-Client-Id"),
+        x_collection: Optional[str] = Header(None, alias="X-Collection"),
 ):
     """
-    Endpoint OpenAI simule pour Open WebUI.
-    Extrait la question, execute le pipeline RAG, renvoie la reponse.
+    Endpoint compatible OpenAI pour Open WebUI.
+
+    Header X-Collection : nom de la collection Qdrant à interroger.
+                          Si absent, utilise settings.default_collection.
+
+    La route fait exactement 3 choses :
+    1. Extraire la dernière question utilisateur.
+    2. Déterminer la collection cible.
+    3. Appeler answer() et retourner la réponse.
+
+    Tout le reste (pipeline, format Haystack, LLM) est dans retrieval/services.py.
     """
     user_messages = [
         msg.content for msg in completion_request.messages if msg.role == "user"
     ]
     if not user_messages:
-        raise HTTPException(status_code=400, detail="Aucun message utilisateur trouve.")
+        raise HTTPException(status_code=400, detail="Aucun message utilisateur trouvé.")
 
     last_question = user_messages[-1]
-    client_id = x_client_id if x_client_id is not None else settings.client_id
+    collection_name = completion_request.model
+
+    # Vérification de sécurité optionnelle
+    if collection_name not in settings.List_collection:
+        logger.warning(f"Collection {collection_name} inconnue, fallback sur default.")
+        collection_name = settings.default_collection
 
     try:
-        pipeline = request.app.state.query_pipeline
         logger.info(
             "api.rag.execute",
-            client_id=client_id,
+            collection=collection_name,
             model_requested=completion_request.model,
         )
 
-        rag_response = answer(query=last_question, client_id=client_id, pipeline=pipeline)
+        rag_response = answer(query=last_question, collection_name=collection_name)
 
         return ChatCompletionResponse(
             model=completion_request.model,

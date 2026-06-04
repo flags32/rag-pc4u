@@ -4,13 +4,13 @@ import structlog
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from qdrant_client import QdrantClient
+
 from rag_pc4u.api.routes.query import router as query_router
 from rag_pc4u.api.routes.ingest import router as ingest_router
 from rag_pc4u.api.routes.health import router as health_router
-from rag_pc4u.retrieval.pipeline import build_hybrid_rag_pipeline
 from rag_pc4u.core.config import settings
 from rag_pc4u.core.logger_config import configure_logging
-
 
 logger = structlog.get_logger(__name__)
 
@@ -18,38 +18,48 @@ logger = structlog.get_logger(__name__)
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     configure_logging()
-    application.state.query_pipeline = build_hybrid_rag_pipeline()
+
+    # --- NOUVEAU : Récupération des collections existantes ---
+    try:
+        client = QdrantClient(url=settings.qdrant_url)
+        response = client.get_collections()
+        # On met à jour la liste de collection qui ce trouve dans les settings et qui redemarre vide a cahque lancement
+        settings.List_collection = [col.name for col in response.collections]
+        logger.info(
+            "Collections synchronisées depuis Qdrant",
+            count=len(settings.List_collection),
+            collections=settings.List_collection
+        )
+    except Exception as e:
+        logger.error("Erreur lors de la récupération des collections Qdrant", error=str(e))
+
+
     logger.info(
         "api.startup",
-        client_id=settings.client_id,
-        collection=settings.collection_name,
         qdrant=settings.qdrant_url,
         ollama=settings.ollama_host,
     )
     yield
     logger.info("api.shutdown")
 
-
 app = FastAPI(
-    title="RAG PC4U API",
+    title="RAG PC4U API v2",
     version="0.1.0",
-    description="API RAG on-premise souveraine — stack Haystack + Qdrant + Ollama",
+    description="API RAG on-premise souveraine — multi-collections",
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # A restreindre en production a l'URL de l'Open WebUI
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Montage des routes pour que le  main ne contient plus aucune logique metier
 app.include_router(health_router)
 app.include_router(query_router)
 app.include_router(ingest_router)
-
 
 def run() -> None:
     uvicorn.run(
@@ -58,7 +68,6 @@ def run() -> None:
         port=settings.api_port,
         reload=False,
     )
-
 
 if __name__ == "__main__":
     run()

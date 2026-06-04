@@ -10,28 +10,27 @@ class Settings(BaseSettings):
     )
 
     # Ollama
-    ollama_host: str = "http://192.168.204.21:11434" #modifier en fonction
+    ollama_host: str = "http://192.168.204.21:11434"
     ollama_embed_model: str = "bge-m3:latest"
-    ollama_llm_model: str = "qwen2.5:14b"
+    ollama_llm_model: str = "qwen2.5:14b-instruct-q8_0"
 
-    # Qdrant pointe vers le LXC Proxmox
+    # Qdrant — pointe vers le LXC Proxmox
     qdrant_host: str = "192.168.204.20"
     qdrant_port: int = 6333
-    embedding_dim: int = 1024  # dimension de bge-base-en-v1.5, utilisée à la création de la collection
+    embedding_dim: int = 1024  # dimension de bge-m3
 
     # RAG
-    top_k: int = 20  # nombre de chunks remontés par le retriever
-    chunk_size: int = 512  # taille des chunks pour DocumentSplitter
-    chunk_overlap: int = 50  # recouvrement entre chunks
+    top_k: int = 20      # chunks remontés par le retriever
+    chunk_size: int = 512
+    chunk_overlap: int = 50
 
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
-    # Cloisonnement client
-    client_id: str = "client_demo"
-    #version modifiable par client à tester  collection_name: str = f"documents_{client_id}"
-    collection_name: str = "documents_client_demo"# à modifier en fonction du client pour l'instant ce n'est pas configurable et c'est de la demo
+    List_collection: list[str] = [] #on va faire une commande pour recuperer la liste des collections qdrant
+    default_collection: str = "documents_machine"
+
     # SMB
     smb_host: str = ""
     smb_share: str = ""
@@ -43,18 +42,13 @@ class Settings(BaseSettings):
     nextcloud_user: str = ""
     nextcloud_password: str = ""
     nextcloud_remote_path: str = "/documents"
+
     # Logs
     log_level: str = "INFO"
 
-    @property#proprety est utile pour tout ce qui est url ou autre en python car on peut l'appeler directement sans faire un get'
+    @property
     def qdrant_url(self) -> str:
         return f"http://{self.qdrant_host}:{self.qdrant_port}"
-    """
-    @property
-    def collection_name(self) -> str:
-        return f"documents_{self.client_id}"
-        """
-    # la seule chose secure est que le client_id ne sorte pas de la collection cependant cela peut etre problematique si un client veut sortir de sa collection'
 
 
 settings = Settings()

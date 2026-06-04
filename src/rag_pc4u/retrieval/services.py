@@ -1,64 +1,70 @@
+"""Couche service RAG — isole l'API du format interne Haystack."""
 import structlog
-from haystack import Pipeline
-from rag_pc4u.core.models import QueryResponse, Source
-from rag_pc4u.core.tenancy import filter_for
-from rag_pc4u.core.config import settings
 from haystack.dataclasses import ChatMessage
+
+from rag_pc4u.core.models import QueryResponse, Source
+from rag_pc4u.core.config import settings
+from rag_pc4u.retrieval.pipeline import build_hybrid_rag_pipeline
 
 logger = structlog.get_logger(__name__)
 
 
-def answer(query: str, client_id: str, pipeline: Pipeline) -> QueryResponse:
-    """Isole l'API du format interne de Haystack en utilisant le pipeline injecté."""
-    logger.info("Exécution du RAG", client_id=client_id, query=query)
+def answer(query: str, collection_name: str) -> QueryResponse:
+    """
+    Exécute le pipeline RAG sur la collection demandée et retourne une QueryResponse.
 
-    runtime_filters = filter_for(client_id=client_id)
+    Le pipeline est récupéré depuis le cache lru_cache de build_hybrid_rag_pipeline —
+    pas de reconstruction à chaque appel.
 
-    # C'est ici qu'on distribue manuellement la query au ranker et au prompt_builder
+    La route HTTP ne connaît ni les pipelines ni le format Haystack.
+    Elle appelle answer(), reçoit une QueryResponse, c'est tout.
+
+    Args:
+        query           : Question de l'utilisateur.
+        collection_name : Collection Qdrant à interroger.
+    """
+    logger.info("Exécution du RAG", collection=collection_name, query=query)
+
+    pipeline = build_hybrid_rag_pipeline(collection_name)
+
     results = pipeline.run({
         "dense_embedder": {"text": query},
         "sparse_embedder": {"text": query},
-        "hybrid_retriever": {"filters": runtime_filters},
         "prompt_builder": {"query": query},
         "ranker": {"query": query},
     })
 
+    # Extraction de la réponse LLM (OllamaGenerator peut retourner str ou ChatMessage)
     replies = results.get("llm", {}).get("replies", [])
-
     if replies:
-        if isinstance(replies[0], ChatMessage):
-            reply_text = replies[0].content
-        elif isinstance(replies[0], str):
-            reply_text = replies[0]
+        first = replies[0]
+        if isinstance(first, ChatMessage):
+            reply_text = first.content
+        elif isinstance(first, str):
+            reply_text = first
         else:
-            reply_text = str(replies[0])
+            reply_text = str(first)
     else:
         reply_text = "Désolé, je n'ai pas pu générer de réponse."
 
+    # Extraction des documents reranked exposés par DocumentExposer
     retrieved_docs = results.get("document_exposer", {}).get("exposed_documents", [])
 
     sources = [
         Source(
-            url=doc.meta.get("url", "Non spécifiée"),
-            content=doc.content if doc.content else "",
-            metadata=doc.meta,
+            # file_path comme URL de source (chemin complet pour traçabilité)
+            url=doc.meta.get("file_path", "Non spécifiée"),
+            content=doc.content or "",
+            metadata=doc.meta,  # contient aussi file_name et date_added
         )
         for doc in retrieved_docs
     ]
-
-    # DEBUG CRITIQUE
-    print(f"DEBUG: Nombre de documents trouvés = {len(retrieved_docs)}")
-    for i, doc in enumerate(retrieved_docs):
-        print(f"DEBUG: Contenu du doc {i} : {doc.content[:100]}...")  # Affiche les 100 premiers caractères
-
-    if len(retrieved_docs) > 0 and "Désolé" in reply_text:
-        print("ALERTE: Le LLM a ignoré les documents fournis !")
 
     return QueryResponse(
         answer=reply_text,
         sources=sources,
         metadata={
-            "client_id": client_id,
+            "collection": collection_name,
             "llm_model": settings.ollama_llm_model,
             "docs_retrieved": len(sources),
         },
