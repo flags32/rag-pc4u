@@ -20,9 +20,9 @@ class Settings(BaseSettings):
     embedding_dim: int = 1024  # dimension de bge-m3
 
     # RAG
-    top_k: int = 20      # chunks remontés par le retriever
-    chunk_size: int = 512
-    chunk_overlap: int = 50
+    top_k: int = 35      # chunks remontés par le retriever
+    chunk_size: int = 384
+    chunk_overlap: int = 40
 
     # API
     api_host: str = "0.0.0.0"
