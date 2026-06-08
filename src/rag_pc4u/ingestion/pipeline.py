@@ -25,8 +25,8 @@ from rag_pc4u.core.custom_components.enricher import MetadataEnricher
 from rag_pc4u.core.custom_components.extensionless import ExtensionlessToDocument
 
 
+# Dans _make_docling_converter()
 def _make_docling_converter() -> DoclingConverter:
-    """Construit le convertisseur Docling pour les PDF."""
     pdf_pipeline_options = PdfPipelineOptions(do_ocr=False)
     doc_converter = DocumentConverter(
         format_options={
@@ -39,6 +39,8 @@ def _make_docling_converter() -> DoclingConverter:
         chunker=HybridChunker(
             tokenizer="BAAI/bge-m3",
             max_tokens=settings.chunk_size,
+            # Force l'utilisation du cache local
+            tokenizer_options={"local_files_only": True},
         ),
     )
 
