@@ -50,9 +50,9 @@ class Settings(BaseSettings):
     smb_password: str = ""
 
     # Nextcloud / WebDAV
-    nextcloud_url: str = ""
-    nextcloud_user: str = ""
-    nextcloud_password: str = ""
+    nextcloud_url: str = "192.168.204.24"
+    nextcloud_user: str = "root"
+    nextcloud_password: str = "admin123"
     nextcloud_remote_path: str = "/documents"
 
     log_level: str = "INFO"

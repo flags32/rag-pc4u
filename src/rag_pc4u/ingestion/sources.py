@@ -36,4 +36,3 @@ class LocalDirectoryScanner:
 
         logger.info("scanner.files_found", count=len(file_paths), path=str(path))
         return {"paths": file_paths}
-
