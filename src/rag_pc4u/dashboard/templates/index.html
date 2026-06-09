@@ -1,13 +1,165 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-    <meta charset="UTF-8">
-    <title>Dashboard</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAG PC4U — Sync Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Outfit:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
 </head>
-<body>
-    <h1>
-        DashBoard
-    </h1>
+  <body>
 
-</body>
+  <!-- HEADER -->
+    <header>
+      <div class="container">
+        <div class="header-inner">
+          <div class="logo">
+            <div class="logo-hex">⬡</div>
+            <div>
+              <div class="logo-title">RAG PC4U</div>
+              <div class="logo-sub">Nextcloud Sync Dashboard</div>
+            </div>
+          </div>
+          <div class="header-right">
+            <div class="nc-badge">
+              <div class="status-dot checking" id="dot"></div>
+              <span id="nc-status-text">Vérification...</span>
+            </div>
+            <div class="nc-url" id="nc-url"></div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+  <!-- MAIN -->
+    <div class="container">
+
+      <!-- Stats -->
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="stat-label">Mappings</div>
+          <div class="stat-value" id="s-mappings">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">En cours</div>
+          <div class="stat-value" id="s-running">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Syncs aujourd'hui</div>
+          <div class="stat-value" id="s-today">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Erreurs (24 h)</div>
+          <div class="stat-value" id="s-errors">—</div>
+        </div>
+      </div>
+
+      <!-- Grid principal -->
+      <div class="main-grid">
+
+        <!-- MAPPINGS -->
+        <div>
+          <div class="section-header">
+            <h2 class="section-title">Mappings actifs</h2>
+            <button class="btn btn-primary" onclick="openModal()">
+              <span>+</span> Nouveau
+            </button>
+          </div>
+          <div id="mappings-container">
+            <div class="empty-state">
+              <div class="empty-icon">📡</div>
+              <div class="empty-title">Chargement...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- HISTORIQUE -->
+        <div>
+          <div class="section-header">
+            <h2 class="section-title">Historique</h2>
+            <select class="hist-filter" id="hist-filter" onchange="loadHistory()">
+              <option value="">Tous</option>
+            </select>
+          </div>
+          <div id="history-container">
+            <div class="empty-state">
+              <div class="empty-icon">📋</div>
+              <div class="empty-title">Chargement...</div>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /main-grid -->
+      <div class="page-bottom"></div>
+    </div><!-- /container -->
+
+    <!-- MODAL : NOUVEAU MAPPING -->
+    <div class="modal-overlay" id="modal" onclick="overlayClick(event)">
+      <div class="modal-panel">
+        <div class="modal-header">
+          <span class="modal-title">Nouveau mapping Nextcloud → RAG</span>
+          <button class="modal-close" onclick="closeModal()">✕</button>
+        </div>
+        <div class="modal-body">
+
+          <!-- Navigateur Nextcloud -->
+          <div class="field">
+            <label class="field-label">Dossier Nextcloud</label>
+            <div class="browser-box">
+              <div class="browser-breadcrumb" id="bc">
+                <span class="bc-item" onclick="browse('/')">⌂ Racine</span>
+              </div>
+              <div class="browser-list" id="browser-list">
+                <div class="browser-loading">Chargement...</div>
+              </div>
+              <div class="browser-selected">
+                <span class="browser-selected-label">Sélectionné :</span>
+                <span class="browser-selected-path" id="sel-path">—</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Collection -->
+          <div class="field">
+            <label class="field-label" for="f-coll">Collection RAG</label>
+            <input class="field-input" id="f-coll" type="text"
+              placeholder="ex : documents_technique" autocomplete="off">
+          </div>
+
+          <!-- Label -->
+          <div class="field">
+            <label class="field-label" for="f-label">Libellé (optionnel)</label>
+            <input class="field-input" id="f-label" type="text"
+              placeholder="ex : Documentation machine">
+          </div>
+
+          <!-- Intervalle -->
+          <div class="field">
+            <label class="field-label">Intervalle de sync</label>
+            <div class="interval-grid" id="int-grid">
+              <button class="int-btn" data-v="5"    onclick="pickInt(this)">5 min</button>
+              <button class="int-btn active" data-v="15"   onclick="pickInt(this)">15 min</button>
+              <button class="int-btn" data-v="30"   onclick="pickInt(this)">30 min</button>
+              <button class="int-btn" data-v="60"   onclick="pickInt(this)">1 h</button>
+              <button class="int-btn" data-v="240"  onclick="pickInt(this)">4 h</button>
+              <button class="int-btn" data-v="1440" onclick="pickInt(this)">24 h</button>
+            </div>
+          </div>
+
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" onclick="closeModal()">Annuler</button>
+          <button class="btn btn-primary" id="btn-create" onclick="createMapping()">
+            Créer le mapping →
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toasts -->
+    <div id="toast-zone"></div>
+
+    <script src="script.js"></script>
+  </body>
 </html>
