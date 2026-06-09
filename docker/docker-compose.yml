@@ -10,11 +10,17 @@ services:
     env_file:
       - ../.env
     environment:
+      HF_HUB_OFFLINE: "1"
+      HF_HOME: "/root/.cache/hf_cache"
+      FASTEMBED_CACHE_PATH: "/root/.cache/fastembed_cache"
       OLLAMA_HOST: "http://192.168.204.21:11434"
       OLLAMA_EMBED_MODEL: "bge-m3:latest"
       OLLAMA_LLM_MODEL: "qwen2.5:14b"
       QDRANT_HOST: "192.168.204.20"
       QDRANT_PORT: "6333"
+    volumes:
+      - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/hf_cache:/root/.cache/hf_cache"
+      - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/fastembed_cache:/root/.cache/fastembed_cache"
     restart: unless-stopped
 
   # 2. Ton Dashboard de synchronisation Nextcloud
@@ -28,14 +34,11 @@ services:
     env_file:
       - ../.env
     environment:
-      # On passe les mêmes configurations pour que le watcher sache où injecter les données
       OLLAMA_HOST: "http://192.168.204.21:11434"
       OLLAMA_EMBED_MODEL: "bge-m3:latest"
       OLLAMA_LLM_MODEL: "qwen2.5:14b"
       QDRANT_HOST: "192.168.204.20"
       QDRANT_PORT: "6333"
-    # ICI C'EST LA MAGIE : On écrase le CMD par défaut du Dockerfile
-    # pour lancer ton script de dashboard à la place
     command: ["uv", "run", "python", "-m", "rag_pc4u.dashboard.run_dashboard"]
     restart: unless-stopped
     depends_on:

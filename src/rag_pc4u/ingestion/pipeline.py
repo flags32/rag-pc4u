@@ -1,4 +1,8 @@
 """Pipeline d'indexation Haystack — ciblé par collection."""
+import os
+from functools import lru_cache
+from pathlib import Path
+
 from haystack import Pipeline
 from haystack.components.converters.txt import TextFileToDocument
 from haystack.components.preprocessors import DocumentCleaner, DocumentSplitter
@@ -16,6 +20,7 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling_haystack.converter import DoclingConverter
 from docling.chunking import HybridChunker
+from transformers import AutoTokenizer
 
 from rag_pc4u.core.components import get_document_store
 from rag_pc4u.core.config import settings
@@ -24,8 +29,40 @@ from rag_pc4u.core.custom_components.csv_converter import CSVRowToDocument
 from rag_pc4u.core.custom_components.enricher import MetadataEnricher
 from rag_pc4u.core.custom_components.extensionless import ExtensionlessToDocument
 
+# Chemin local du cache HuggingFace (cohérent avec docker-compose.yml)
+_HF_CACHE = Path(os.environ.get("HF_HOME", "/root/.cache/hf_cache"))
+_BGE_M3_LOCAL = _HF_CACHE / "hub" / "models--BAAI--bge-m3"
 
-# Dans _make_docling_converter()
+
+@lru_cache(maxsize=1)
+def _get_bge_tokenizer() -> AutoTokenizer:
+    """
+    Charge le tokenizer BAAI/bge-m3 depuis le cache local uniquement.
+    Mis en cache pour n'être instancié qu'une seule fois.
+
+    HF_HUB_OFFLINE=1 est positionné dans docker-compose, mais on force
+    local_files_only=True ici aussi pour être explicite et fonctionner
+    même hors Docker (ex: dev local).
+    """
+    # Cherche d'abord dans le snapshot le plus récent du cache
+    snapshots_dir = _BGE_M3_LOCAL / "snapshots"
+    if snapshots_dir.exists():
+        snapshots = sorted(snapshots_dir.iterdir(), reverse=True)
+        if snapshots:
+            return AutoTokenizer.from_pretrained(
+                str(snapshots[0]),
+                local_files_only=True,
+            )
+
+    # Fallback : laisser HF chercher dans tout le cache via le nom du modèle
+    # (fonctionne si HF_HOME est bien défini et HF_HUB_OFFLINE=1)
+    return AutoTokenizer.from_pretrained(
+        "BAAI/bge-m3",
+        local_files_only=True,
+        cache_dir=str(_HF_CACHE),
+    )
+
+
 def _make_docling_converter() -> DoclingConverter:
     pdf_pipeline_options = PdfPipelineOptions(do_ocr=False)
     doc_converter = DocumentConverter(
@@ -37,10 +74,10 @@ def _make_docling_converter() -> DoclingConverter:
         converter=doc_converter,
         export_type="doc_chunks",
         chunker=HybridChunker(
-            tokenizer="BAAI/bge-m3",
+            # On passe l'objet tokenizer directement — Docling ne touche pas
+            # à HuggingFace Hub, aucune requête réseau possible.
+            tokenizer=_get_bge_tokenizer(),
             max_tokens=settings.chunk_size,
-            # Force l'utilisation du cache local
-            tokenizer_options={"local_files_only": True},
         ),
     )
 
