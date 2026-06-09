@@ -22,7 +22,7 @@ from rag_pc4u.ingestion.sources import LocalDirectoryScanner
 logger = structlog.get_logger(__name__)
 
 
-# ── Gestion de l'état par collection ─────────────────────────────────────────
+# Gestion de l'état par collection
 
 def _state_file_for(collection_name: str) -> Path:
     """

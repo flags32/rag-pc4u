@@ -117,7 +117,7 @@
       font-family: var(--font-m);
     }
 
-    /* ── Stats Row ───────────────────────────────────────────────────────── */
+    /* Stats Row  */
     .stats-row {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
@@ -165,7 +165,7 @@
       100% { transform: scale(1); color: var(--text); }
     }
 
-    /* ── Section Layout ──────────────────────────────────────────────────── */
+    /* Section Layout  */
     .main-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -198,7 +198,7 @@
       border-radius: 2px;
     }
 
-    /* ── Mapping Cards ───────────────────────────────────────────────────── */
+    /* Mapping Cards */
     #mappings-container {
       display: flex; flex-direction: column; gap: .75rem;
     }
@@ -315,7 +315,7 @@
       padding-top: .85rem;
     }
 
-    /* ── Boutons ─────────────────────────────────────────────────────────── */
+    /* Boutons  */
     .btn {
       display: inline-flex; align-items: center; gap: .4rem;
       padding: .45rem .9rem;
@@ -365,7 +365,7 @@
     .btn-danger:hover { background: var(--error-dim); color: var(--error); border-color: rgba(240,82,103,.3); }
     .btn-sm { padding: .32rem .7rem; font-size: .74rem; }
 
-    /* ── Empty States ────────────────────────────────────────────────────── */
+    /* Empty States */
     .empty-state {
       text-align: center;
       padding: 3rem 1.5rem;
@@ -377,7 +377,7 @@
     .empty-title { font-family: var(--font-h); font-size: .95rem; font-weight: 700; color: var(--text2); margin-bottom: .4rem; }
     .empty-sub { font-size: .8rem; margin-bottom: 1.25rem; }
 
-    /* ── History ─────────────────────────────────────────────────────────── */
+    /*  History  */
     #history-container {
       display: flex; flex-direction: column; gap: .4rem;
       max-height: 560px; overflow-y: auto;
@@ -428,7 +428,7 @@
     }
     .hist-filter:focus { outline: none; border-color: var(--accent); }
 
-    /* ── Modal ───────────────────────────────────────────────────────────── */
+    /* Modal */
     .modal-overlay {
       position: fixed; inset: 0; z-index: 200;
       background: rgba(0,0,0,.7);
@@ -480,7 +480,7 @@
       border-top: 1px solid var(--border);
     }
 
-    /* ── Form Fields ─────────────────────────────────────────────────────── */
+    /* Form Fields */
     .field { margin-bottom: 1.1rem; }
     .field-label {
       display: block;
@@ -510,7 +510,7 @@
     }
     .field-input::placeholder { color: var(--text3); }
 
-    /* ── Folder Browser ──────────────────────────────────────────────────── */
+    /* Folder Browser */
     .browser-box {
       background: var(--surface);
       border: 1px solid var(--border2);
@@ -567,7 +567,7 @@
     .browser-selected-label { color: var(--text3); }
     .browser-selected-path { color: var(--accent); word-break: break-all; }
 
-    /* ── Interval Picker ─────────────────────────────────────────────────── */
+    /* Interval Picker */
     .interval-grid {
       display: grid;
       grid-template-columns: repeat(6, 1fr);
@@ -592,7 +592,7 @@
       border-color: rgba(0,229,195,.4);
     }
 
-    /* ── Toast Notifications ─────────────────────────────────────────────── */
+    /* Toast Notifications  */
     #toast-zone {
       position: fixed; bottom: 1.5rem; right: 1.5rem;
       z-index: 999;
@@ -616,7 +616,7 @@
     .toast.t-error   { border-color: rgba(240,82,103,.4); color: var(--error); }
     .toast.t-info    { border-color: rgba(79,142,247,.4); color: var(--blue); }
 
-    /* ── Misc ────────────────────────────────────────────────────────────── */
+    /* Misc  */
     .divider {
       height: 1px;
       background: var(--border);

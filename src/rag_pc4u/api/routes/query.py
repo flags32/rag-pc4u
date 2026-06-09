@@ -100,9 +100,32 @@ async def chat_completions(
         raise HTTPException(status_code=400, detail="Aucun message utilisateur trouvé.")
 
     last_question = user_messages[-1]
-    collection_name = completion_request.model
+    keywords = ["dashboard", "synchro", "nextcloud", "synchronisation", "panneau de contrôle"]
+    if any(kw in last_question.lower() for kw in keywords):
+        logger.info("api.rag.dashboard_requested", question=last_question)
 
-    # Vérification de sécurité optionnelle
+        dashboard_url = "http://192.168.204.24:8001/"
+
+        artifact_response = (
+            "Voici votre panneau de gestion des synchronisations Nextcloud. "
+            "Il s'est ouvert dans la fenêtre latérale à droite de votre écran.\n\n"
+            "```html\n"
+            f'<iframe src="{dashboard_url}" style="width:100%; height:100vh; border:none; margin:0; padding:0;"></iframe>\n'
+            "```"
+        )
+
+        return ChatCompletionResponse(
+            model=completion_request.model,
+            choices=[
+                ChatCompletionResponseChoice(
+                    message=ChatMessage(role="assistant", content=artifact_response)
+                )
+            ],
+        )
+
+    # Reste de ton code initial (Appel à Haystack)
+    collection_name = completion_request.model
+    #verification optionnel
     if collection_name not in settings.List_collection:
         logger.warning(f"Collection {collection_name} inconnue, fallback sur default.")
         collection_name = settings.default_collection

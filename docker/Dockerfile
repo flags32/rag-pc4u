@@ -25,6 +25,8 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY src/ ./src/
 RUN uv sync --frozen --no-dev
 
+# On expose les deux ports maintenant
 EXPOSE 8000
+EXPOSE 8001
 
 CMD ["uv", "run", "rag-api"]
