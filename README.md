@@ -67,7 +67,7 @@ uv --version
 ```bash
 mkdir ramcn
 cd ramcn
-git clone (https://github.com/flags32/rag-pc4u.git) 
+git clone https://github.com/flags32/rag-pc4u.git 
 cd /root/ramcn/rag-pc4u
 ```
 
@@ -99,7 +99,7 @@ Les containers tournent en mode hors-ligne (`HF_HUB_OFFLINE=1`). Le télécharge
 ```bash
 cd /root/ramcn/rag-pc4u
 uv sync --frozen
-uv run python src/rag_pc4u/scripts/cache_models.py
+uv run python src/rag_pc4u/scripts/precache_models.py
 ```
 le code vous le dira mais pensais bien après avoir executé le script de cache_models.py a faire :
 ```.env

@@ -1,5 +1,5 @@
 services:
-  # 1. Ton API principale (Interface de Chat / Haystack)
+  # 1. API principale (Interface de Chat / Haystack)
   api:
     build:
       context: ..
@@ -23,7 +23,7 @@ services:
       - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/fastembed_cache:/root/.cache/fastembed_cache"
     restart: unless-stopped
 
-  # 2. Ton Dashboard de synchronisation Nextcloud
+  # 2. Dashboard de synchronisation Nextcloud
   dashboard:
     build:
       context: ..
@@ -34,11 +34,24 @@ services:
     env_file:
       - ../.env
     environment:
+      HF_HUB_OFFLINE: "1"
+      HF_HOME: "/root/.cache/hf_cache"
+      FASTEMBED_CACHE_PATH: "/root/.cache/fastembed_cache"
+      # Docling charge ses propres modèles (ds4sd/docling-models) via ce chemin.
+      # Distinct de HF_HOME — obligatoire pour le pipeline d'indexation PDF.
+      DOCLING_ARTIFACTS_PATH: "/root/.cache/docling_cache"
       OLLAMA_HOST: "http://192.168.204.21:11434"
       OLLAMA_EMBED_MODEL: "bge-m3:latest"
       OLLAMA_LLM_MODEL: "qwen2.5:14b"
       QDRANT_HOST: "192.168.204.20"
       QDRANT_PORT: "6333"
+    volumes:
+      - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/hf_cache:/root/.cache/hf_cache"
+      - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/fastembed_cache:/root/.cache/fastembed_cache"
+      # Cache des modèles Docling (layout PDF, tableaux) — séparé de HF_HOME
+      - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/docling_cache:/root/.cache/docling_cache"
+      # Persistance des mappings et de l'historique des syncs entre restarts
+      - "/root/ramcn/rag-pc4u/src/rag_pc4u/dashboard/mapping:/app/src/rag_pc4u/dashboard/mapping"
     command: ["uv", "run", "python", "-m", "rag_pc4u.dashboard.run_dashboard"]
     restart: unless-stopped
     depends_on:

@@ -33,6 +33,11 @@ from typing import Optional
 STATE_FILE = Path(__file__).parent / "mapping/dashboard_state.json"
 _lock = threading.Lock()
 
+# Création du dossier au chargement du module — garanti avant tout accès I/O.
+# parents=True : crée /app/src/rag_pc4u/dashboard/mapping/ en une seule fois.
+# exist_ok=True : silencieux si le dossier existe déjà (restart du conteneur).
+STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+
 
 # I/O
 
@@ -46,6 +51,8 @@ def _load() -> dict:
 
 
 def _save(state: dict) -> None:
+    # Sécurité supplémentaire : recrée le dossier s'il a été supprimé à chaud
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(
         json.dumps(state, indent=2, ensure_ascii=False, default=str),
         encoding="utf-8",
