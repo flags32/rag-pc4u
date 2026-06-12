@@ -127,7 +127,7 @@ async def chat_completions(
             f'<div class="card">'
             f'<h2>⬡ RAG PC4U — Sync Dashboard</h2>'
             f'<p>Panneau de gestion des synchronisations Nextcloud → Collections RAG</p>'
-            f'<a href="{dashboard_url}" target="_blank" rel="noopener">Ouvrir le Dashboard →</a>'
+            f'<a href="http://192.168.204.23:8001/">Ouvrir le Dashboard →</a>'
             f'</div></body></html>\n'
             "```"
         )

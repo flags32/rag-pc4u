@@ -1,54 +1,77 @@
 """Le script se lance UNE SEULE FOIS pour cacher tous les modèles localement."""
 import os
+import subprocess
+import sys
 from pathlib import Path
 
-# 1. Configuration des chemins et variables d'environnement (À faire en premier)
+# 1. Configuration des chemins (AVANT tout import ML)
 LOCAL_MODELS_DIR = Path(__file__).parent / "models_cache"
-LOCAL_MODELS_DIR.mkdir(exist_ok=True)
 
-os.environ["HF_HOME"]                = str(LOCAL_MODELS_DIR / "hf_cache")
-os.environ["FASTEMBED_CACHE_PATH"]   = str(LOCAL_MODELS_DIR / "fastembed_cache")
-os.environ["DOCLING_ARTIFACTS_PATH"] = str(LOCAL_MODELS_DIR / "docling_cache")
+HF_CACHE      = LOCAL_MODELS_DIR / "hf_cache"
+FASTEMBED_DIR = LOCAL_MODELS_DIR / "fastembed_cache"
+DOCLING_DIR   = LOCAL_MODELS_DIR / "docling_cache"
 
-# 2. Importation des dépendances après configuration de l'environnement
+for d in (HF_CACHE, FASTEMBED_DIR, DOCLING_DIR):
+    d.mkdir(parents=True, exist_ok=True)
+
+os.environ["HF_HOME"]                = str(HF_CACHE)
+os.environ["FASTEMBED_CACHE_PATH"]   = str(FASTEMBED_DIR)
+os.environ["DOCLING_ARTIFACTS_PATH"] = str(DOCLING_DIR)
+
+# 2. Imports après configuration de l'environnement
 from fastembed import SparseTextEmbedding
 from huggingface_hub import snapshot_download
 from sentence_transformers import CrossEncoder
 
-print("1/5 — Caching BM25 (FastEmbed)...")
+print("1/4 — Caching BM25 (FastEmbed)...")
 SparseTextEmbedding(model_name="Qdrant/bm25")
 
-print("2/5 — Caching BAAI/bge-m3 tokenizer (Docling HybridChunker)...")
+print("2/4 — Caching BAAI/bge-m3 tokenizer (Docling HybridChunker)...")
 snapshot_download(
     repo_id="BAAI/bge-m3",
     ignore_patterns=["*.safetensors", "*.bin"],
 )
 
-print("3/5 — Caching BAAI/bge-reranker-v2-m3 (CrossEncoder)...")
+print("3/4 — Caching BAAI/bge-reranker-v2-m3 (CrossEncoder)...")
 CrossEncoder("BAAI/bge-reranker-v2-m3")
 
-print("4/5 — Caching ds4sd/docling-models (layout PDF, tableaux, figures)...")
-# DOCLING_ARTIFACTS_PATH doit être défini AVANT cet import pour que
-# docling écrive dans le bon dossier dès l'initialisation.
-snapshot_download(repo_id="ds4sd/docling-models")
-
-print("5/5 — Warm-up du pipeline Docling (valide que tout est présent)...")
-# Ce warm-up force Docling à initialiser StandardPdfPipeline depuis le cache,
-# ce qui confirme que les modèles sont complets avant de passer offline.
-from docling.document_converter import DocumentConverter
-from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
-from docling.document_converter import PdfFormatOption
-DocumentConverter(
-    format_options={
-        InputFormat.PDF: PdfFormatOption(
-            pipeline_options=PdfPipelineOptions(do_ocr=False)
-        )
-    }
+print("4/4 — Caching modèles Docling (layout + tableformer) via docling-tools...")
+result = subprocess.run(
+    ["docling-tools", "models", "download", "--output-dir", str(DOCLING_DIR)],
+    env={**os.environ},
 )
 
+if result.returncode != 0:
+    print("\n✗ docling-tools models download a échoué.")
+    print("  Lance manuellement :")
+    print(f"  DOCLING_ARTIFACTS_PATH={DOCLING_DIR} uv run docling-tools models download --output-dir {DOCLING_DIR}")
+    sys.exit(1)
+
+# Vérification : les .safetensors doivent être présents
+safetensors_files = list(DOCLING_DIR.rglob("*.safetensors"))
+if not safetensors_files:
+    print("\n✗ Aucun fichier .safetensors trouvé dans docling_cache/.")
+    print("  Le téléchargement a peut-être échoué silencieusement.")
+    sys.exit(1)
+
+print("   Modèles Docling présents :")
+for f in safetensors_files:
+    print(f"   ✓ {f.relative_to(DOCLING_DIR)}")
+
 print("\n✅ Tous les modèles sont cachés.")
-print(f"   HF cache       : {LOCAL_MODELS_DIR / 'hf_cache'}")
-print(f"   FastEmbed cache: {LOCAL_MODELS_DIR / 'fastembed_cache'}")
-print(f"   Docling cache  : {LOCAL_MODELS_DIR / 'docling_cache'}")
+print(f"   HF cache       : {HF_CACHE}")
+print(f"   FastEmbed cache: {FASTEMBED_DIR}")
+print(f"   Docling cache  : {DOCLING_DIR}")
+
+print()
+for label, path in [
+    ("hf_cache",        HF_CACHE),
+    ("fastembed_cache", FASTEMBED_DIR),
+    ("docling_cache",   DOCLING_DIR),
+]:
+    items = list(path.rglob("*")) if path.exists() else []
+    files = [x for x in items if x.is_file()]
+    status = "✓" if files else "✗ VIDE — quelque chose a raté"
+    print(f"   {status}  {label}/ ({len(files)} fichiers)")
+
 print("\nHF_HUB_OFFLINE=1 peut maintenant être activé.")

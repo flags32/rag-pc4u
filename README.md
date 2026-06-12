@@ -67,7 +67,7 @@ uv --version
 ```bash
 mkdir ramcn
 cd ramcn
-git clone https://github.com/flags32/rag-pc4u.git 
+git clone https://github.com/flags32/rag-pc4u.git
 cd /root/ramcn/rag-pc4u
 ```
 
@@ -87,7 +87,6 @@ Variables à renseigner dans `.env` :
 NEXTCLOUD_URL=http://192.168.x.x
 NEXTCLOUD_USER=mon_utilisateur
 NEXTCLOUD_PASSWORD=mon_mot_de_passe
-
 ```
 
 Les variables Ollama et Qdrant sont déjà définies dans `docker-compose.yml` et n'ont pas à être dupliquées dans `.env`. Si vous les ajoutez quand même, celles du `docker-compose.yml` auront la priorité (elles écrasent `env_file`).
@@ -101,27 +100,35 @@ cd /root/ramcn/rag-pc4u
 uv sync --frozen
 uv run python src/rag_pc4u/scripts/precache_models.py
 ```
-le code vous le dira mais pensais bien après avoir executé le script de cache_models.py a faire :
-```.env
+
+Une fois le script terminé, activez le mode hors-ligne dans `.env` :
+
+```env
 HF_HUB_OFFLINE=1
 ```
 
-Ce script télécharge et met en cache trois choses :
+Ce script télécharge et met en cache quatre choses :
 
 - **`Qdrant/bm25`** — modèle sparse BM25 via FastEmbed
 - **`BAAI/bge-m3`** — tokenizer uniquement (utilisé par Docling pour le chunking, pas les poids du modèle complet)
 - **`BAAI/bge-reranker-v2-m3`** — poids complets du reranker (~1,1 Go)
+- **`ds4sd/docling-models`** — modèles de layout et tableformer pour l'extraction PDF (~600 Mo)
+
+> **Important — comment les modèles Docling sont mis en cache.**
+> Le script télécharge `ds4sd/docling-models` dans le cache HuggingFace standard, puis copie les fichiers réels (sans symlinks) dans `docling_cache/`. Cette étape est nécessaire car Docker monte `docling_cache/` en volume : si le dossier contenait des symlinks HF pointant vers `hf_cache/blobs/`, ils seraient cassés à l'intérieur du container. Le script vérifie à la fin que des fichiers `.safetensors` sont bien présents et lève une erreur explicite si ce n'est pas le cas.
 
 Durée estimée : 10 à 20 minutes selon votre connexion. À ne faire qu'une seule fois — ou si vous changez de machine.
 
 Vérification une fois terminé :
 
 ```bash
+# Dossiers non vides = OK
 ls src/rag_pc4u/scripts/models_cache/hf_cache/
 ls src/rag_pc4u/scripts/models_cache/fastembed_cache/
-```
 
-Les deux dossiers doivent être non vides.
+# Les .safetensors Docling doivent être des fichiers réels, pas des symlinks
+find src/rag_pc4u/scripts/models_cache/docling_cache/ -name "*.safetensors" -not -type l
+```
 
 ### 6. Builder et démarrer
 
@@ -213,6 +220,7 @@ docker exec -it rag-api bash
 # Vérifier que les caches sont bien montés dans le container
 docker exec rag-api ls /root/.cache/hf_cache/
 docker exec rag-api ls /root/.cache/fastembed_cache/
+docker exec rag-api ls /root/.cache/docling_cache/
 
 # Vérifier la connexion à Qdrant depuis le container
 docker exec rag-api curl -s http://192.168.204.20:6333/collections | python3 -m json.tool
@@ -240,6 +248,35 @@ docker exec rag-api ls /root/.cache/hf_cache/
 Si le dossier est vide sur l'hôte, le script de cache n'a pas été lancé ou a échoué — relancez l'étape 5.
 
 Si le dossier est plein sur l'hôte mais vide dans le container, le volume n'est pas monté correctement — vérifiez les chemins dans `docker/docker-compose.yml` et que le projet est bien à `/root/ramcn/rag-pc4u/`.
+
+### "Missing safe tensors file" — le pdf_converter plante
+
+Erreur typique dans les logs :
+
+```
+Error: Missing safe tensors file: /root/.cache/docling_cache/model.safetensors
+```
+
+Le cache Docling contient des symlinks HuggingFace au lieu de fichiers réels, ou le téléchargement initial a été fait avec une ancienne version du script. Pour corriger :
+
+```bash
+# 1. Supprimer l'ancien cache Docling
+rm -rf src/rag_pc4u/scripts/models_cache/docling_cache/
+
+# 2. Relancer le script de cache
+cd /root/ramcn/rag-pc4u
+uv run python src/rag_pc4u/scripts/precache_models.py
+
+# 3. Vérifier que les .safetensors sont bien des fichiers réels (pas des symlinks)
+find src/rag_pc4u/scripts/models_cache/docling_cache/ -name "*.safetensors" -not -type l
+
+# 4. Redémarrer
+cd docker && docker compose up -d
+```
+
+### Warnings "Unsupported primitive type 'getset_descriptor'" ou "'PosixPath'"
+
+Ces avertissements viennent du sérialiseur Haystack et sont bénins — ils n'ont aucun impact fonctionnel. Ils apparaissent lors de la sérialisation interne du `DoclingConverter` et peuvent être ignorés.
 
 ### Le dashboard affiche "Nextcloud non joignable"
 
@@ -290,10 +327,11 @@ rag-pc4u/
 │       ├── retrieval/        # Pipeline RAG hybride + reranker + prompts
 │       ├── dashboard/        # Dashboard FastAPI (port 8001) + scheduler
 │       └── scripts/
-│           ├── cache_models.py          # À lancer une fois avant Docker
+│           ├── precache_models.py       # À lancer une fois avant Docker
 │           └── models_cache/            # Monté en volume dans les containers
 │               ├── hf_cache/
-│               └── fastembed_cache/
+│               ├── fastembed_cache/
+│               └── docling_cache/       # Fichiers réels, sans symlinks
 ├── pyproject.toml
 ├── uv.lock
 └── README.md                # Ce fichier — requis par le Dockerfile
