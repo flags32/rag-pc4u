@@ -1,13 +1,15 @@
 """Routes de requêtes RAG PC4U — compatibilité OpenAI pour Open WebUI."""
+import json
 import time
 import structlog
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Header
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from rag_pc4u.core.config import settings
-from rag_pc4u.retrieval.services import answer
+from rag_pc4u.retrieval.services import answer, answer_stream
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["Query"])
@@ -75,6 +77,57 @@ async def list_models():
     }
 
 
+async def _stream_openai_format(query: str, collection_name: str, model: str):
+    """Convertit answer_stream() en format SSE compatible OpenAI."""
+    chunk_id = "chatcmpl-rag-pc4u-stream"
+    created = int(time.time())
+
+    try:
+        async for token in answer_stream(query=query, collection_name=collection_name):
+            payload = {
+                "id": chunk_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": token},
+                    "finish_reason": None,
+                }],
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
+
+        final_payload = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop",
+            }],
+        }
+        yield f"data: {json.dumps(final_payload)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    except Exception as e:
+        logger.error("api.rag.stream_error", error=str(e))
+        error_payload = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {"content": f"\n\n[Erreur RAG : {str(e)}]"},
+                "finish_reason": "stop",
+            }],
+        }
+        yield f"data: {json.dumps(error_payload)}\n\n"
+        yield "data: [DONE]\n\n"
+
+
 @router.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(
         completion_request: ChatCompletionRequest,
@@ -100,7 +153,7 @@ async def chat_completions(
         raise HTTPException(status_code=400, detail="Aucun message utilisateur trouvé.")
 
     last_question = user_messages[-1]
-    keywords = ["dashboard", "synchro", "nextcloud", "synchronisation", "panneau de contrôle"]
+    keywords = ["dashboard"]
     if any(kw in last_question.lower() for kw in keywords):
         logger.info("api.rag.dashboard_requested", question=last_question)
 
@@ -147,6 +200,18 @@ async def chat_completions(
     if collection_name not in settings.List_collection:
         logger.warning(f"Collection {collection_name} inconnue, fallback sur default.")
         collection_name = settings.default_collection
+
+    # Branche streaming : si demandé, on bascule en SSE avant tout appel à answer()
+    if completion_request.stream:
+        logger.info(
+            "api.rag.execute_stream",
+            collection=collection_name,
+            model_requested=completion_request.model,
+        )
+        return StreamingResponse(
+            _stream_openai_format(last_question, collection_name, completion_request.model),
+            media_type="text/event-stream",
+        )
 
     try:
         logger.info(
