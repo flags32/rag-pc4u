@@ -105,8 +105,17 @@ def run_folder_ingestion(folder_path: str, collection_name: str) -> None:
     current_files: list[Path] = scanner.run(directory_path=folder_path)["paths"]
 
     if not current_files:
-        logger.warning("Aucun fichier trouvé dans le répertoire.")
-        return
+        logger.warning(
+            "Aucun fichier trouvé dans le répertoire — vérification des "
+            "suppressions tout de même.",
+            path=folder_path,
+        )
+        # IMPORTANT : ne PAS faire de `return` ici. Un dossier vide signifie
+        # souvent que TOUS les fichiers ont été supprimés (cas fréquent :
+        # le watcher Nextcloud a déjà unlink() le dernier fichier d'un
+        # mapping avant d'appeler cette fonction). Sans la suite du code,
+        # `previous_state` ne serait jamais comparé à `current_paths_str`
+        # et les chunks Qdrant resteraient orphelins indéfiniment.
 
     previous_state = _load_state(collection_name)
     new_state: dict[str, str] = {}
