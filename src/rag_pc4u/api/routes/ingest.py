@@ -55,6 +55,7 @@ async def ingest_file(
         # 4. Appel au pipeline Haystack ciblé
         pipeline = build_indexing_pipeline(collection_name=collection_name)
 
+
         results = pipeline.run({
             "router": {"sources": [tmp_path]}
         })

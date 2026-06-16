@@ -7,7 +7,7 @@ dans un thread séparé et est arrêté proprement à la fermeture de l'API.
 
 from datetime import datetime
 from typing import Callable, Optional
-
+import pytz
 import structlog
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -25,8 +25,9 @@ class SyncScheduler:
     """
 
     def __init__(self) -> None:
+        self._tz = pytz.timezone("Europe/Paris")
         self._scheduler = BackgroundScheduler(
-            timezone="Europe/Paris",
+            timezone=self._tz,
             job_defaults={
                 "misfire_grace_time": 120,   # tolère jusqu'à 2min de retard
                 "coalesce": True,            # pas d'empilement si le job est en retard
@@ -36,61 +37,47 @@ class SyncScheduler:
         self._scheduler.start()
         logger.info("scheduler.started")
 
-    # Gestion des jobs
-
     def add_job(
         self,
         job_id: str,
         sync_fn: Callable,
         interval_minutes: int = 15,
         run_immediately: bool = True,
+        start_date: Optional[datetime] = None,
     ) -> None:
         """
         Enregistre ou remplace un job de sync.
-
-        Args:
-            job_id           : Identifiant unique (= mapping_id).
-            sync_fn          : Callable sans argument déclenché à chaque intervalle.
-            interval_minutes : Fréquence de synchronisation en minutes.
-            run_immediately  : Si True, la 1ère exécution est immédiate.
+        Laisse APScheduler calculer le premier run si run_immediately est False.
         """
-        # Supprime l'éventuel job précédent avec le même id
         if self._scheduler.get_job(job_id):
             self._scheduler.remove_job(job_id)
 
-        next_run = datetime.now() if run_immediately else None
+        # Configuration dynamique des arguments pour éviter d'imposer next_run_time=None
+        add_job_kwargs = {
+            "trigger": IntervalTrigger(minutes=interval_minutes, start_date=start_date, timezone=self._tz),
+            "id": job_id,
+            "name": f"sync:{job_id}",
+            "replace_existing": True,
+        }
 
-        self._scheduler.add_job(
-            sync_fn,
-            trigger=IntervalTrigger(minutes=interval_minutes),
-            id=job_id,
-            name=f"sync:{job_id}",
-            replace_existing=True,
-            next_run_time=next_run,
-        )
+        if run_immediately:
+            add_job_kwargs["next_run_time"] = datetime.now(self._tz)
+
+        self._scheduler.add_job(sync_fn, **add_job_kwargs)
+
         logger.info(
             "scheduler.job_added",
             job_id=job_id,
             interval_minutes=interval_minutes,
-            run_immediately=run_immediately,
+            start_date=start_date.isoformat() if start_date else "Immédiat / Trigger par défaut",
+            run_immediately=run_immediately
         )
 
-    def remove_job(self, job_id: str) -> bool:
-        """Supprime un job. Retourne True s'il existait."""
-        if self._scheduler.get_job(job_id):
-            self._scheduler.remove_job(job_id)
-            logger.info("scheduler.job_removed", job_id=job_id)
-            return True
-        return False
-
-    def trigger_now(self, job_id: str) -> bool:
-        """
-        Déclenche l'exécution immédiate d'un job sans modifier son planning.
-        Retourne False si le job n'existe pas.
-        """
+    def trigger_immediately(self, job_id: str) -> bool:
+        """Déclenche l'exécution immédiate d'un job sans modifier son planning."""
         job = self._scheduler.get_job(job_id)
         if job:
-            job.modify(next_run_time=datetime.now())
+            job.modify(next_run_time=datetime.now(self._tz))
             logger.info("scheduler.triggered_immediately", job_id=job_id)
             return True
         return False
@@ -100,7 +87,7 @@ class SyncScheduler:
         job = self._scheduler.get_job(job_id)
         if not job:
             return None
-        return {
+        return {\
             "id": job.id,
             "name": job.name,
             "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
@@ -120,10 +107,6 @@ class SyncScheduler:
     def has_job(self, job_id: str) -> bool:
         return self._scheduler.get_job(job_id) is not None
 
-    # Lifecycle
-
     def shutdown(self) -> None:
-        """Arrête le scheduler proprement (attend la fin des jobs en cours)."""
-        if self._scheduler.running:
-            self._scheduler.shutdown(wait=True)
-            logger.info("scheduler.stopped")
+        self._scheduler.shutdown(wait=False)
+        logger.info("scheduler.shutdown")

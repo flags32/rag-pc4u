@@ -141,30 +141,49 @@ function cardHTML(m) {
 function startSSE() {
   const es = new EventSource('/api/events');
   es.onmessage = (e) => {
-    const updates = JSON.parse(e.data);
-    let runningCount = 0;
+    try {
+      const updates = JSON.parse(e.data);
+      let runningCount = 0;
+      let needsReload = false; // Flag pour éviter le spam de requêtes
 
-    updates.forEach(u => {
-      const prev = S.liveData[u.id];
-      S.liveData[u.id] = u;
-      if (u.in_progress) runningCount++;
+      updates.forEach(u => {
+        const prev = S.liveData[u.id];
+        S.liveData[u.id] = u;
+        if (u.in_progress) runningCount++;
 
-      // Si une sync vient de se terminer → refraîchir la carte complète
-      if (prev?.in_progress && !u.in_progress) {
+        // On vérifie si un rechargement est nécessaire, mais on ne l'exécute pas ici
+        if ((prev?.in_progress && !u.in_progress) || (prev && prev.last_sync !== u.last_sync)) {
+          needsReload = true;
+        } else {
+          patchCard(u);
+        }
+      });
+
+      // On déclenche le rechargement UNE SEULE FOIS après la boucle
+      if (needsReload) {
         loadMappings();
         loadHistory();
-        loadStatus();
-      } else {
-        // Mise à jour légère de la carte existante
-        patchCard(u);
       }
-    });
 
-    setStatVal('s-running', runningCount);
+      // Gestion propre de l'indicateur global
+      const dot = document.getElementById('dot');
+      const statusText = document.getElementById('nc-status-text');
+
+      if (runningCount > 0) {
+        dot.className = 'status-dot running';
+        statusText.textContent = 'Synchronisation en cours...';
+      } else {
+        // Retour au statut normal une fois fini
+        dot.className = 'status-dot ok';
+        statusText.textContent = 'Nextcloud connecté';
+      }
+    } catch (err) {
+      console.error('SSE Parsing Error:', err);
+    }
   };
   es.onerror = () => {
     es.close();
-    setTimeout(startSSE, 5_000);
+    setTimeout(startSSE, 5000);
   };
 }
 
@@ -218,6 +237,7 @@ async function createMapping() {
   const path  = S.selPath;
   const coll  = document.getElementById('f-coll').value.trim();
   const label = document.getElementById('f-label').value.trim();
+  const startAt = document.getElementById('f-start-at').value; // Récupère le format YYYY-MM-DDTHH:MM
 
   if (!path || path === '/') { toast('Sélectionnez un dossier Nextcloud', 'error'); return; }
   if (!coll)                  { toast('Entrez un nom de collection RAG', 'error'); return; }
@@ -234,11 +254,12 @@ async function createMapping() {
         collection_name: coll,
         interval_minutes: S.selInterval,
         label: label || null,
+        start_at: startAt || null // Transmission au backend
       }),
     });
-    toast('Mapping créé — 1ère sync démarrée en arrière-plan', 'success');
+    toast('Mapping créé avec succès !', 'success');
     closeModal();
-    loadMappings();
+    await loadMappings();
   } catch (e) {
     toast(`Erreur : ${e.message}`, 'error');
   } finally {
@@ -302,16 +323,11 @@ function updateHistFilter() {
 
 /* Modal */
 function openModal() {
-  S.selPath = '/';
-  S.selInterval = 15;
+  document.getElementById('modal-create').classList.add('open');
   document.getElementById('f-coll').value = '';
   document.getElementById('f-label').value = '';
-  document.getElementById('sel-path').textContent = '—';
-  document.querySelectorAll('.int-btn').forEach(b =>
-    b.classList.toggle('active', parseInt(b.dataset.v) === 15)
-  );
-  document.getElementById('modal').classList.add('is-open');
-  browse('/');
+  document.getElementById('f-start-at').value = ''; // Réinitialisation
+  pickInt(document.querySelector('.int-btn[data-v="15"]'));
 }
 function closeModal() { document.getElementById('modal').classList.remove('is-open'); }
 function overlayClick(e) { if (e.target.id === 'modal') closeModal(); }

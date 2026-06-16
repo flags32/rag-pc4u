@@ -1,14 +1,17 @@
 """Pipeline d'indexation Haystack — ciblé par collection."""
+import logging
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
-from haystack import Pipeline
+from haystack import Pipeline, Document
 from haystack.components.converters.txt import TextFileToDocument
 from haystack.components.preprocessors import DocumentCleaner, DocumentSplitter
 from haystack.components.routers import FileTypeRouter
 from haystack.components.writers import DocumentWriter
 from haystack.components.joiners import DocumentJoiner
+from haystack.dataclasses import ByteStream
 
 from haystack_integrations.components.embedders.fastembed import (
     FastembedSparseDocumentEmbedder,
@@ -28,6 +31,8 @@ from rag_pc4u.core.custom_components.csv_converter import CSVRowToDocument
 # Import unique depuis custom_components — aucune duplication
 from rag_pc4u.core.custom_components.enricher import MetadataEnricher
 from rag_pc4u.core.custom_components.extensionless import ExtensionlessToDocument
+
+logger = logging.getLogger(__name__)
 
 # Chemin local du cache HuggingFace (cohérent avec docker-compose.yml)
 _HF_CACHE = Path(os.environ.get("HF_HOME", "/root/.cache/hf_cache"))
@@ -63,14 +68,92 @@ def _get_bge_tokenizer() -> AutoTokenizer:
     )
 
 
-def _make_docling_converter() -> DoclingConverter:
+class PatchedDoclingConverter(DoclingConverter):
+    """
+    Sous-classe de DoclingConverter qui garantit que file_path est toujours
+    présent dans doc.meta après conversion.
+
+    Docling avec export_type="doc_chunks" ne garantit pas que dl_meta.origin.filename
+    est renseigné. On intercepte le résultat et on injecte file_path depuis la
+    source d'origine selon trois niveaux de fallback :
+      1. dl_meta.origin.filename / uri  — ce que Docling pose normalement
+      2. binary_hash                    — si Docling a hashé le contenu
+      3. source unique                  — si un seul fichier a été passé
+    """
+
+    def run(
+        self,
+        sources: List[Union[str, Path, ByteStream]],
+        meta: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+    ) -> Dict[str, List[Document]]:
+        result = super().run(sources=sources, meta=meta)
+        docs: List[Document] = result.get("documents", [])
+
+        source_paths = _extract_source_paths(sources)
+
+        for doc in docs:
+            # Si file_path est déjà là (ex: version future de docling), on ne touche pas
+            if doc.meta.get("file_path"):
+                continue
+
+            # 1. Tenter de récupérer le chemin depuis dl_meta
+            dl_origin = (doc.meta.get("dl_meta") or {}).get("origin") or {}
+            path_from_docling = dl_origin.get("filename") or dl_origin.get("uri") or ""
+            if path_from_docling.startswith("file://"):
+                path_from_docling = path_from_docling[7:]
+
+            if path_from_docling:
+                doc.meta["file_path"] = path_from_docling
+                continue
+
+            # 2. Fallback via binary_hash
+            binary_hash = dl_origin.get("binary_hash")
+            if binary_hash and binary_hash in source_paths:
+                doc.meta["file_path"] = source_paths[binary_hash]
+                continue
+
+            # 3. Dernier recours : source unique
+            if len(source_paths) == 1:
+                doc.meta["file_path"] = next(iter(source_paths.values()))
+            else:
+                logger.warning(
+                    "PatchedDoclingConverter: impossible de déterminer file_path "
+                    "pour doc.id=%s (meta=%r)", doc.id, doc.meta
+                )
+
+        return {"documents": docs}
+
+
+def _extract_source_paths(
+    sources: List[Union[str, Path, ByteStream]],
+) -> Dict[Any, str]:
+    """
+    Construit un dict {clé → chemin_str} à partir des sources passées à Docling.
+    La clé est le binary_hash pour un ByteStream, ou le chemin str pour un Path.
+    """
+    result: Dict[Any, str] = {}
+    for src in sources:
+        if isinstance(src, (str, Path)):
+            p = str(src)
+            result[p] = p
+        elif isinstance(src, ByteStream):
+            fp = (src.meta or {}).get("file_path", "")
+            if fp:
+                try:
+                    result[hash(src.data)] = str(fp)
+                except Exception:
+                    pass
+    return result
+
+
+def _make_docling_converter() -> PatchedDoclingConverter:
     pdf_pipeline_options = PdfPipelineOptions(do_ocr=False)
     doc_converter = DocumentConverter(
         format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_pipeline_options)
         }
     )
-    return DoclingConverter(
+    return PatchedDoclingConverter(
         converter=doc_converter,
         export_type="doc_chunks",
         chunker=HybridChunker(

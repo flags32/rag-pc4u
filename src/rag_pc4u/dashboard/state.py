@@ -39,51 +39,33 @@ _lock = threading.Lock()
 STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 
-# I/O
-
 def _load() -> dict:
-    if STATE_FILE.exists():
-        try:
-            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, IOError):
-            pass
-    return {"mappings": {}, "sync_history": []}
+    if not STATE_FILE.exists():
+        return {"mappings": {}, "sync_history": []}
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"mappings": {}, "sync_history": []}
 
 
 def _save(state: dict) -> None:
-    # Sécurité supplémentaire : recrée le dossier s'il a été supprimé à chaud
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(
-        json.dumps(state, indent=2, ensure_ascii=False, default=str),
-        encoding="utf-8",
-    )
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2, ensure_ascii=False)
 
-
-# Mappings
 
 def get_mappings() -> dict:
-    """Retourne une copie du dict de mappings."""
     with _lock:
-        return dict(_load()["mappings"])
-
-
-def get_mapping(mapping_id: str) -> Optional[dict]:
-    with _lock:
-        return _load()["mappings"].get(mapping_id)
+        return _load()["mappings"]
 
 
 def add_mapping(
-        remote_path: str,
-        collection_name: str,
-        interval_minutes: int = 15,
-        label: Optional[str] = None,
+    remote_path: str,
+    collection_name: str,
+    interval_minutes: int = 15,
+    label: Optional[str] = None,
+    start_at: Optional[str] = None,
 ) -> dict:
-    """
-    Crée un nouveau mapping et le persiste.
-
-    Returns:
-        Le mapping créé avec son id généré.
-    """
     with _lock:
         state = _load()
         mid = str(uuid.uuid4())[:8]
@@ -93,6 +75,7 @@ def add_mapping(
             "remote_path": remote_path,
             "collection_name": collection_name,
             "interval_minutes": interval_minutes,
+            "start_at": start_at,
             "label": label,
             "created_at": datetime.now().isoformat(),
             "last_sync": None,
@@ -105,43 +88,27 @@ def add_mapping(
         return mapping
 
 
-def delete_mapping(mapping_id: str) -> bool:
-    """Supprime un mapping. Retourne True s'il existait."""
+def remove_mapping(mapping_id: str) -> None:
     with _lock:
         state = _load()
-        if mapping_id not in state["mappings"]:
-            return False
-        del state["mappings"][mapping_id]
-        _save(state)
-        return True
+        if mapping_id in state["mappings"]:
+            del state["mappings"][mapping_id]
+            state["sync_history"] = [h for h in state["sync_history"] if h.get("mapping_id") != mapping_id]
+            _save(state)
 
 
-def update_mapping_after_sync(mapping_id: str, sync_stats: dict) -> None:
-    """
-    Met à jour last_sync, last_status et last_stats d'un mapping
-    après une synchronisation (succès ou erreur).
-    """
+def update_mapping_sync_status(mapping_id: str, status: str, stats: Optional[dict] = None) -> None:
     with _lock:
         state = _load()
-        if mapping_id not in state["mappings"]:
-            return
-        m = state["mappings"][mapping_id]
-        m["last_sync"] = datetime.now().isoformat()
-        m["last_status"] = sync_stats.get("status")
-        m["last_stats"] = {
-            k: sync_stats.get(k, 0)
-            for k in ("new", "modified", "deleted", "errors")
-        }
-        _save(state)
+        if mapping_id in state["mappings"]:
+            state["mappings"][mapping_id]["last_sync"] = datetime.now().isoformat()
+            state["mappings"][mapping_id]["last_status"] = status
+            if stats:
+                state["mappings"][mapping_id]["last_stats"] = stats
+            _save(state)
 
 
-# Historique des syncs
-
-def add_sync_record(mapping_id: str, stats: dict) -> None:
-    """
-    Insère un enregistrement de sync en tête de l'historique.
-    Limite l'historique à 500 entrées.
-    """
+def add_sync_history_record(mapping_id: str, stats: dict) -> None:
     with _lock:
         state = _load()
         record = {
@@ -155,17 +122,7 @@ def add_sync_record(mapping_id: str, stats: dict) -> None:
         _save(state)
 
 
-def get_sync_history(
-        limit: int = 50,
-        mapping_id: Optional[str] = None,
-) -> list:
-    """
-    Retourne l'historique des syncs, optionnellement filtré par mapping.
-
-    Args:
-        limit      : Nombre maximum d'entrées retournées.
-        mapping_id : Si fourni, filtre sur ce mapping uniquement.
-    """
+def get_sync_history(limit: int = 50, mapping_id: Optional[str] = None) -> list:
     with _lock:
         state = _load()
         history = state["sync_history"]
@@ -176,17 +133,14 @@ def get_sync_history(
 
 def get_sync_counts_today() -> dict:
     """
-    Retourne le nombre de syncs et d'erreurs pour aujourd'hui.
-    Utilisé par le dashboard pour les stats en temps réel.
-    """
+        Retourne le nombre de syncs et d'erreurs pour aujourd'hui.
+        Utilisé par le dashboard pour les stats en temps réel.
+        """
     today = datetime.now().strftime("%Y-%m-%d")
     with _lock:
         state = _load()
         history = state["sync_history"]
 
-    total = sum(1 for h in history if (h.get("timestamp") or "").startswith(today))
-    errors = sum(
-        1 for h in history
-        if (h.get("timestamp") or "").startswith(today) and h.get("status") == "error"
-    )
+    total = sum(1 for h in history if h.get("timestamp", "").startswith(today))
+    errors = sum(1 for h in history if h.get("timestamp", "").startswith(today) and h.get("status") == "error")
     return {"total": total, "errors": errors}
