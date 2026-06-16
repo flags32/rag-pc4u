@@ -141,49 +141,32 @@ function cardHTML(m) {
 function startSSE() {
   const es = new EventSource('/api/events');
   es.onmessage = (e) => {
-    try {
-      const updates = JSON.parse(e.data);
-      let runningCount = 0;
-      let needsReload = false; // Flag pour éviter le spam de requêtes
+    const updates = JSON.parse(e.data);
+    let runningCount = 0;
 
-      updates.forEach(u => {
-        const prev = S.liveData[u.id];
-        S.liveData[u.id] = u;
-        if (u.in_progress) runningCount++;
+    updates.forEach(u => {
+      const prev = S.liveData[u.id];
+      S.liveData[u.id] = u;
+      if (u.in_progress) runningCount++;
 
-        // On vérifie si un rechargement est nécessaire, mais on ne l'exécute pas ici
-        if ((prev?.in_progress && !u.in_progress) || (prev && prev.last_sync !== u.last_sync)) {
-          needsReload = true;
-        } else {
-          patchCard(u);
-        }
-      });
-
-      // On déclenche le rechargement UNE SEULE FOIS après la boucle
-      if (needsReload) {
+      // Si une sync vient de se terminer, OU si la date de dernière sync a
+      // changé sans que l'état 'in_progress' ait été capté entre deux ticks
+      // → on rafraîchit la carte complète (garde-fou, sans risque)
+      if ((prev?.in_progress && !u.in_progress) || (prev && prev.last_sync !== u.last_sync)) {
         loadMappings();
         loadHistory();
-      }
-
-      // Gestion propre de l'indicateur global
-      const dot = document.getElementById('dot');
-      const statusText = document.getElementById('nc-status-text');
-
-      if (runningCount > 0) {
-        dot.className = 'status-dot running';
-        statusText.textContent = 'Synchronisation en cours...';
+        loadStatus();
       } else {
-        // Retour au statut normal une fois fini
-        dot.className = 'status-dot ok';
-        statusText.textContent = 'Nextcloud connecté';
+        // Mise à jour légère de la carte existante
+        patchCard(u);
       }
-    } catch (err) {
-      console.error('SSE Parsing Error:', err);
-    }
+    });
+
+    setStatVal('s-running', runningCount);
   };
   es.onerror = () => {
     es.close();
-    setTimeout(startSSE, 5000);
+    setTimeout(startSSE, 5_000);
   };
 }
 
@@ -237,7 +220,7 @@ async function createMapping() {
   const path  = S.selPath;
   const coll  = document.getElementById('f-coll').value.trim();
   const label = document.getElementById('f-label').value.trim();
-  const startAt = document.getElementById('f-start-at').value; // Récupère le format YYYY-MM-DDTHH:MM
+  const startAt = document.getElementById('f-start-at').value;
 
   if (!path || path === '/') { toast('Sélectionnez un dossier Nextcloud', 'error'); return; }
   if (!coll)                  { toast('Entrez un nom de collection RAG', 'error'); return; }
@@ -254,12 +237,12 @@ async function createMapping() {
         collection_name: coll,
         interval_minutes: S.selInterval,
         label: label || null,
-        start_at: startAt || null // Transmission au backend
+        start_at: startAt || null,
       }),
     });
-    toast('Mapping créé avec succès !', 'success');
+    toast(startAt ? 'Mapping créé — sync planifiée' : 'Mapping créé — 1ère sync démarrée en arrière-plan', 'success');
     closeModal();
-    await loadMappings();
+    loadMappings();
   } catch (e) {
     toast(`Erreur : ${e.message}`, 'error');
   } finally {
@@ -323,11 +306,17 @@ function updateHistFilter() {
 
 /* Modal */
 function openModal() {
-  document.getElementById('modal-create').classList.add('open');
+  S.selPath = '/';
+  S.selInterval = 15;
   document.getElementById('f-coll').value = '';
   document.getElementById('f-label').value = '';
-  document.getElementById('f-start-at').value = ''; // Réinitialisation
-  pickInt(document.querySelector('.int-btn[data-v="15"]'));
+  document.getElementById('f-start-at').value = '';
+  document.getElementById('sel-path').textContent = '—';
+  document.querySelectorAll('.int-btn').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.v) === 15)
+  );
+  document.getElementById('modal').classList.add('is-open');
+  browse('/');
 }
 function closeModal() { document.getElementById('modal').classList.remove('is-open'); }
 function overlayClick(e) { if (e.target.id === 'modal') closeModal(); }
