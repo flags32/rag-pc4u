@@ -46,6 +46,7 @@ dependencies = [
     "transformers>=4.50.0",
     "docling-slim>=2.96.1",
     "apscheduler>=3.11.2",
+    "pytz>=2026.2",
 ]
 
 [dependency-groups]
