@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from haystack import Pipeline, Document
+from haystack import Pipeline, Document, component
 from haystack.components.converters.txt import TextFileToDocument
 from haystack.components.preprocessors import DocumentCleaner, DocumentSplitter
 from haystack.components.routers import FileTypeRouter
@@ -81,6 +81,7 @@ class PatchedDoclingConverter(DoclingConverter):
       3. source unique                  — si un seul fichier a été passé
     """
 
+    @component.output_types(documents=List[Document])
     def run(
         self,
         sources: List[Union[str, Path, ByteStream]],
