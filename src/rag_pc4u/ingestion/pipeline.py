@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from haystack import Pipeline, Document, component
+from haystack import Pipeline, Document
 from haystack.components.converters.txt import TextFileToDocument
 from haystack.components.preprocessors import DocumentCleaner, DocumentSplitter
 from haystack.components.routers import FileTypeRouter
@@ -81,7 +81,6 @@ class PatchedDoclingConverter(DoclingConverter):
       3. source unique                  — si un seul fichier a été passé
     """
 
-    @component.output_types(documents=List[Document])
     def run(
         self,
         sources: List[Union[str, Path, ByteStream]],
@@ -186,8 +185,16 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
         FileTypeRouter(mime_types=["text/plain", "application/pdf", "text/markdown", "text/csv"]),
     )
     pipeline.add_component("pdf_converter", _make_docling_converter())
-    pipeline.add_component("txt_converter", TextFileToDocument())
-    pipeline.add_component("md_converter", TextFileToDocument())
+    # store_full_path=True est OBLIGATOIRE ici : sans ce paramètre, les
+    # versions récentes de Haystack ne stockent QUE le nom du fichier dans
+    # meta.file_path (pas le chemin absolu complet). run.py et
+    # nextcloud_watcher.py filtrent et suppriment les anciens chunks en
+    # comparant le chemin absolu complet — si seul le nom de fichier est
+    # stocké, ce filtre ne trouve jamais de correspondance, les anciens
+    # chunks ne sont jamais supprimés, et chaque modification ajoute un
+    # doublon au lieu de remplacer l'ancien contenu.
+    pipeline.add_component("txt_converter", TextFileToDocument(store_full_path=True))
+    pipeline.add_component("md_converter", TextFileToDocument(store_full_path=True))
     pipeline.add_component("extensionless_converter", ExtensionlessToDocument())
 
     # Ajout du composant CSV
