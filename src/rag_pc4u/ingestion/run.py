@@ -16,6 +16,7 @@ from pathlib import Path
 
 from rag_pc4u.core.logger_config import configure_logging
 from rag_pc4u.core.components import get_document_store
+from rag_pc4u.core.tz_utils import now_paris_naive
 from rag_pc4u.ingestion.pipeline import build_indexing_pipeline
 from rag_pc4u.ingestion.sources import LocalDirectoryScanner
 
@@ -50,7 +51,7 @@ def _save_state(collection_name: str, state: dict[str, str]) -> None:
     )
 
 
-# ── Utilitaires ───────────────────────────────────────────────────────────────
+# Utilitaires
 
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
@@ -84,7 +85,7 @@ def _delete_chunks_for_source(source_path: str, collection_name: str) -> int:
     return len(docs)
 
 
-# ── Point d'entrée principal ──────────────────────────────────────────────────
+# Point d'entrée principal
 
 def run_folder_ingestion(folder_path: str, collection_name: str) -> None:
     """
@@ -159,7 +160,7 @@ def run_folder_ingestion(folder_path: str, collection_name: str) -> None:
             "router": {"sources": files_to_index},
             # date_added transmis à MetadataEnricher — horodatage cohérent
             # pour tous les chunks d'une même session d'ingestion
-            "enricher": {"date_added": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+            "enricher": {"date_added": now_paris_naive().strftime("%Y-%m-%d %H:%M:%S")},
         })
         logger.info(
             "Ingestion terminée",

@@ -30,6 +30,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from rag_pc4u.core.tz_utils import now_paris_naive
+
 STATE_FILE = Path(__file__).parent / "mapping/dashboard_state.json"
 _lock = threading.Lock()
 
@@ -99,7 +101,7 @@ def add_mapping(
             "interval_minutes": interval_minutes,
             "start_at": start_at,
             "label": label,
-            "created_at": datetime.now().isoformat(),
+            "created_at": now_paris_naive().isoformat(),
             "last_sync": None,
             "last_status": None,
             "last_stats": None,
@@ -131,7 +133,7 @@ def update_mapping_after_sync(mapping_id: str, sync_stats: dict) -> None:
         if mapping_id not in state["mappings"]:
             return
         m = state["mappings"][mapping_id]
-        m["last_sync"] = datetime.now().isoformat()
+        m["last_sync"] = now_paris_naive().isoformat()
         m["last_status"] = sync_stats.get("status")
         m["last_stats"] = {
             k: sync_stats.get(k, 0)
@@ -152,7 +154,7 @@ def add_sync_record(mapping_id: str, stats: dict) -> None:
         record = {
             "id": str(uuid.uuid4())[:8],
             "mapping_id": mapping_id,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now_paris_naive().isoformat(),
             **stats,
         }
         state["sync_history"].insert(0, record)
@@ -184,7 +186,7 @@ def get_sync_counts_today() -> dict:
     Retourne le nombre de syncs et d'erreurs pour aujourd'hui.
     Utilisé par le dashboard pour les stats en temps réel.
     """
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = now_paris_naive().strftime("%Y-%m-%d")
     with _lock:
         state = _load()
         history = state["sync_history"]

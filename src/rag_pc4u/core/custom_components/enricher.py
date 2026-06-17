@@ -7,6 +7,8 @@ from typing import List, Optional
 
 from haystack import component, Document
 
+from rag_pc4u.core.tz_utils import now_paris_naive
+
 logger = logging.getLogger(__name__)
 
 @component
@@ -14,7 +16,7 @@ class MetadataEnricher:
     @component.output_types(documents=List[Document])
     def run(self, documents: List[Document], date_added: Optional[str] = None) -> dict:
         if not date_added:
-            date_added = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            date_added = now_paris_naive().strftime("%Y-%m-%d %H:%M:%S")
 
         enriched = []
         for doc in documents:

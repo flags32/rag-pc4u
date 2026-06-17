@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from starlette.staticfiles import StaticFiles
 
 from rag_pc4u.core.config import settings
+from rag_pc4u.core.tz_utils import now_paris_naive
 from rag_pc4u.dashboard import state as ds
 from rag_pc4u.dashboard.scheduler import SyncScheduler
 from rag_pc4u.ingestion.nextcloud_watcher import NextcloudWatcher
@@ -84,20 +85,11 @@ def _register_job(
     def _job():
         _execute_sync(mapping_id)
 
-    start_date = None
-    raw_start_at = mapping.get("start_at")
-    if raw_start_at:
-        try:
-            start_date = datetime.fromisoformat(raw_start_at)
-        except ValueError:
-            logger.warning("dashboard.invalid_start_at_format", start_at=raw_start_at)
-
     _scheduler.add_job(
         job_id=mapping_id,
         sync_fn=_job,
         interval_minutes=mapping["interval_minutes"],
         run_immediately=run_immediately,
-        start_date=start_date,
     )
 
 
@@ -121,7 +113,7 @@ def _execute_sync(mapping_id: str) -> dict:
         stats = {
             "status": "error",
             "error_message": str(e),
-            "finished_at": datetime.now().isoformat(),
+            "finished_at": now_paris_naive().isoformat(),
             "new": 0,
             "modified": 0,
             "deleted": 0,
@@ -142,7 +134,6 @@ class MappingCreate(BaseModel):
     collection_name: str = Field(..., description="Nom de la collection Qdrant cible")
     interval_minutes: int = Field(default=15, ge=1, le=1440)
     label: Optional[str] = Field(default=None, description="Libellé affiché dans le dashboard")
-    start_at: Optional[str] = Field(default=None, description="Date/heure ISO de la 1ère sync planifiée")
 
 
 class SyncResponse(BaseModel):
@@ -179,7 +170,7 @@ async def api_status():
         "active_jobs": len(_scheduler.list_jobs()),
         "syncs_today": counts["total"],
         "errors_today": counts["errors"],
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_paris_naive().isoformat(),
     }
 
 
@@ -204,20 +195,17 @@ async def api_list_mappings():
 async def api_create_mapping(body: MappingCreate, bg: BackgroundTasks):
     """
     Crée un nouveau mapping, enregistre le job et démarre la 1ère sync
-    immédiatement en arrière-plan — sauf si une date de départ future
-    a été spécifiée (start_at).
+    immédiatement en arrière-plan.
     """
     mapping = ds.add_mapping(
         remote_path=body.remote_path,
         collection_name=body.collection_name,
         interval_minutes=body.interval_minutes,
         label=body.label,
-        start_at=body.start_at,
     )
     _register_job(mapping["id"], mapping, run_immediately=False)
-    if not body.start_at:
-        # 1ère sync immédiate en arrière-plan pour ne pas bloquer la réponse
-        bg.add_task(_execute_sync, mapping["id"])
+    # 1ère sync immédiate en arrière-plan pour ne pas bloquer la réponse
+    bg.add_task(_execute_sync, mapping["id"])
     return mapping
 
 

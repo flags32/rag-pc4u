@@ -10,6 +10,7 @@ services:
     env_file:
       - ../.env
     environment:
+      TZ: "Europe/Paris"
       HF_HUB_OFFLINE: "1"
       HF_HOME: "/root/.cache/hf_cache"
       FASTEMBED_CACHE_PATH: "/root/.cache/fastembed_cache"
@@ -34,6 +35,7 @@ services:
     env_file:
       - ../.env
     environment:
+      TZ: "Europe/Paris"
       HF_HUB_OFFLINE: "1"
       HF_HOME: "/root/.cache/hf_cache"
       FASTEMBED_CACHE_PATH: "/root/.cache/fastembed_cache"

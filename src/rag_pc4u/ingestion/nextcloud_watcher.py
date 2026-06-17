@@ -24,6 +24,7 @@ import requests
 import structlog
 
 from rag_pc4u.core.config import settings
+from rag_pc4u.core.tz_utils import now_paris_naive
 from rag_pc4u.ingestion.run import run_folder_ingestion
 
 logger = structlog.get_logger(__name__)
@@ -281,7 +282,7 @@ class NextcloudWatcher:
             return self._do_sync(remote_path, collection_name)
 
     def _do_sync(self, remote_path: str, collection_name: str) -> dict:
-        started_at = datetime.now()
+        started_at = now_paris_naive()
         stats: dict = {
             "remote_path": remote_path,
             "collection": collection_name,
@@ -314,7 +315,7 @@ class NextcloudWatcher:
         except Exception as e:
             logger.error("nextcloud.list_failed", error=str(e))
             stats.update(status="error", error_message=str(e),
-                         finished_at=datetime.now().isoformat())
+                         finished_at=now_paris_naive().isoformat())
             return stats
 
         current_hrefs = {f["href"] for f in remote_files}
@@ -353,7 +354,7 @@ class NextcloudWatcher:
             except Exception as e:
                 logger.error("nextcloud.ingestion_failed", error=str(e))
                 stats.update(status="error", error_message=str(e),
-                             finished_at=datetime.now().isoformat())
+                             finished_at=now_paris_naive().isoformat())
                 return stats
         else:
             logger.info("nextcloud.no_changes", collection=collection_name)
@@ -361,6 +362,6 @@ class NextcloudWatcher:
         # 5. Sauvegarde de l'état WebDAV
         self._save_state(remote_path, new_state)
 
-        stats.update(status="success", finished_at=datetime.now().isoformat())
+        stats.update(status="success", finished_at=now_paris_naive().isoformat())
         logger.info("nextcloud.sync_done", **{k: v for k, v in stats.items() if k != "started_at"})
         return stats
