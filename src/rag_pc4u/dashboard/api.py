@@ -85,11 +85,20 @@ def _register_job(
     def _job():
         _execute_sync(mapping_id)
 
+    start_date = None
+    raw_start_at = mapping.get("start_at")
+    if raw_start_at:
+        try:
+            start_date = datetime.fromisoformat(raw_start_at)
+        except ValueError:
+            logger.warning("dashboard.invalid_start_at_format", start_at=raw_start_at)
+
     _scheduler.add_job(
         job_id=mapping_id,
         sync_fn=_job,
         interval_minutes=mapping["interval_minutes"],
         run_immediately=run_immediately,
+        start_date=start_date,
     )
 
 
@@ -134,6 +143,19 @@ class MappingCreate(BaseModel):
     collection_name: str = Field(..., description="Nom de la collection Qdrant cible")
     interval_minutes: int = Field(default=15, ge=1, le=1440)
     label: Optional[str] = Field(default=None, description="Libellé affiché dans le dashboard")
+    start_at: Optional[str] = Field(default=None, description="Date/heure ISO de la 1ère sync planifiée")
+
+
+class MappingUpdate(BaseModel):
+    """
+    Tous les champs sont optionnels : seuls ceux fournis par le client
+    sont modifiés. start_at est une exception délibérée — voir state.py.
+    """
+    remote_path: Optional[str] = Field(default=None, description="Chemin relatif sur Nextcloud")
+    collection_name: Optional[str] = Field(default=None, description="Nom de la collection Qdrant cible")
+    interval_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
+    label: Optional[str] = Field(default=None, description="Libellé affiché dans le dashboard")
+    start_at: Optional[str] = Field(default=None, description="Date/heure ISO de la prochaine sync planifiée")
 
 
 class SyncResponse(BaseModel):
@@ -195,18 +217,59 @@ async def api_list_mappings():
 async def api_create_mapping(body: MappingCreate, bg: BackgroundTasks):
     """
     Crée un nouveau mapping, enregistre le job et démarre la 1ère sync
-    immédiatement en arrière-plan.
+    immédiatement en arrière-plan — sauf si une date de départ future
+    a été spécifiée (start_at).
     """
     mapping = ds.add_mapping(
         remote_path=body.remote_path,
         collection_name=body.collection_name,
         interval_minutes=body.interval_minutes,
         label=body.label,
+        start_at=body.start_at,
     )
     _register_job(mapping["id"], mapping, run_immediately=False)
-    # 1ère sync immédiate en arrière-plan pour ne pas bloquer la réponse
-    bg.add_task(_execute_sync, mapping["id"])
+    if not body.start_at:
+        # 1ère sync immédiate en arrière-plan pour ne pas bloquer la réponse
+        bg.add_task(_execute_sync, mapping["id"])
     return mapping
+
+
+@app.put("/api/mappings/{mapping_id}", tags=["Mappings"])
+async def api_update_mapping(mapping_id: str, body: MappingUpdate):
+    """
+    Modifie un mapping existant (chemin, collection, intervalle, libellé,
+    date de départ). Le job APScheduler est systématiquement reconstruit
+    après la mise à jour, car un intervalle ou une date de départ modifiés
+    n'auraient AUCUN effet sur le scheduler tant que add_job() n'est pas
+    rappelé — c'est exactement le genre de bug silencieux déjà rencontré
+    ailleurs dans ce projet (cf. le bug initial "ça sync une fois puis
+    s'arrête"), donc on ne prend pas le risque ici.
+
+    Une sync en cours sur ce mapping bloque la modification, pour éviter
+    de changer remote_path/collection_name sous les pieds d'une sync qui
+    tourne déjà avec les anciennes valeurs.
+    """
+    if _in_progress.get(mapping_id):
+        raise HTTPException(409, "Une sync est en cours — attendez qu'elle se termine")
+
+    existing = ds.get_mapping(mapping_id)
+    if not existing:
+        raise HTTPException(404, "Mapping introuvable")
+
+    updated = ds.update_mapping(
+        mapping_id,
+        remote_path=body.remote_path,
+        collection_name=body.collection_name,
+        interval_minutes=body.interval_minutes,
+        label=body.label,
+        start_at=body.start_at,
+    )
+
+    # Reconstruction systématique du job avec les valeurs à jour.
+    _scheduler.remove_job(mapping_id)
+    _register_job(mapping_id, updated, run_immediately=False)
+
+    return updated
 
 
 @app.delete("/api/mappings/{mapping_id}", tags=["Mappings"])

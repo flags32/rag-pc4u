@@ -112,6 +112,39 @@ def add_mapping(
         return mapping
 
 
+def update_mapping(
+        mapping_id: str,
+        remote_path: Optional[str] = None,
+        collection_name: Optional[str] = None,
+        interval_minutes: Optional[int] = None,
+        label: Optional[str] = None,
+        start_at: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Met à jour les champs fournis d'un mapping existant. Les champs non
+    fournis (None) restent inchangés. Retourne le mapping mis à jour, ou
+    None si le mapping n'existe pas.
+    """
+    with _lock:
+        state = _load()
+        if mapping_id not in state["mappings"]:
+            return None
+        m = state["mappings"][mapping_id]
+        if remote_path is not None:
+            m["remote_path"] = remote_path
+        if collection_name is not None:
+            m["collection_name"] = collection_name
+        if interval_minutes is not None:
+            m["interval_minutes"] = interval_minutes
+        if label is not None:
+            m["label"] = label
+        # start_at est volontairement toujours réécrit (même à None) car
+        # l'utilisateur doit pouvoir EFFACER une date de départ déjà fixée.
+        m["start_at"] = start_at
+        _save(state)
+        return m
+
+
 def delete_mapping(mapping_id: str) -> bool:
     """Supprime un mapping. Retourne True s'il existait."""
     with _lock:

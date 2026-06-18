@@ -5,6 +5,7 @@ const S = {
   liveData:    {},  // mapping_id → SSE payload
   selPath:     '/',
   selInterval: 15,
+  editingId:   null,  // null = création, sinon id du mapping en cours d'édition
 };
 
 /* Init */
@@ -130,6 +131,9 @@ function cardHTML(m) {
           onclick="triggerSync('${m.id}')" ${inProg ? 'disabled' : ''}>
           <span class="btn-icon">↺</span> ${inProg ? 'En cours…' : 'Sync maintenant'}
         </button>
+        <button class="btn btn-ghost btn-sm" onclick="openModal('${m.id}')">
+          ✎ Modifier
+        </button>
         <button class="btn btn-danger btn-sm" onclick="delMapping('${m.id}', '${esc(m.label)}')">
           ✕ Supprimer
         </button>
@@ -221,33 +225,44 @@ async function createMapping() {
   const coll  = document.getElementById('f-coll').value.trim();
   const label = document.getElementById('f-label').value.trim();
   const startAt = document.getElementById('f-start-at').value;
+  const isEdit = !!S.editingId;
 
   if (!path || path === '/') { toast('Sélectionnez un dossier Nextcloud', 'error'); return; }
   if (!coll)                  { toast('Entrez un nom de collection RAG', 'error'); return; }
 
   const btn = document.getElementById('btn-create');
   btn.disabled = true;
-  btn.textContent = 'Création…';
+  btn.textContent = isEdit ? 'Enregistrement…' : 'Création…';
+
+  const payload = {
+    remote_path: path,
+    collection_name: coll,
+    interval_minutes: S.selInterval,
+    label: label || null,
+    start_at: startAt || null,
+  };
 
   try {
-    await api('/api/mappings', {
-      method: 'POST',
-      body: JSON.stringify({
-        remote_path: path,
-        collection_name: coll,
-        interval_minutes: S.selInterval,
-        label: label || null,
-        start_at: startAt || null,
-      }),
-    });
-    toast(startAt ? 'Mapping créé — sync planifiée' : 'Mapping créé — 1ère sync démarrée en arrière-plan', 'success');
+    if (isEdit) {
+      await api(`/api/mappings/${S.editingId}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      });
+      toast('Mapping mis à jour', 'success');
+    } else {
+      await api('/api/mappings', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      toast(startAt ? 'Mapping créé — sync planifiée' : 'Mapping créé — 1ère sync démarrée en arrière-plan', 'success');
+    }
     closeModal();
     loadMappings();
   } catch (e) {
     toast(`Erreur : ${e.message}`, 'error');
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Créer le mapping →';
+    btn.textContent = isEdit ? 'Enregistrer →' : 'Créer le mapping →';
   }
 }
 
@@ -305,20 +320,57 @@ function updateHistFilter() {
 }
 
 /* Modal */
-function openModal() {
-  S.selPath = '/';
-  S.selInterval = 15;
-  document.getElementById('f-coll').value = '';
-  document.getElementById('f-label').value = '';
-  document.getElementById('f-start-at').value = '';
-  document.getElementById('sel-path').textContent = '—';
-  document.querySelectorAll('.int-btn').forEach(b =>
-    b.classList.toggle('active', parseInt(b.dataset.v) === 15)
-  );
+async function openModal(mappingId = null) {
+  S.editingId = mappingId;
+  const titleEl = document.getElementById('modal-title');
+  const btn = document.getElementById('btn-create');
+
+  if (mappingId) {
+    const m = S.mappings.find(x => x.id === mappingId);
+    if (!m) { toast('Mapping introuvable', 'error'); return; }
+
+    titleEl.textContent = 'Modifier le mapping';
+    btn.textContent = 'Enregistrer →';
+
+    S.selPath = m.remote_path;
+    S.selInterval = m.interval_minutes;
+    document.getElementById('f-coll').value = m.collection_name;
+    document.getElementById('f-label').value = m.label || '';
+    document.getElementById('f-start-at').value = m.start_at || '';
+    document.getElementById('sel-path').textContent = m.remote_path;
+    document.querySelectorAll('.int-btn').forEach(b =>
+      b.classList.toggle('active', parseInt(b.dataset.v) === m.interval_minutes)
+    );
+    // browse() est appelé pour afficher le contenu du DOSSIER PARENT (contexte
+    // visuel utile), mais browse() écrase S.selPath avec ce chemin parent.
+    // On réaffirme donc le vrai chemin du mapping juste après, sinon
+    // "Enregistrer" sans clic dans le navigateur sauvegarderait le parent
+    // au lieu du chemin réel édité.
+    await browse(m.remote_path.split('/').slice(0, -1).join('/') || '/');
+    S.selPath = m.remote_path;
+    document.getElementById('sel-path').textContent = m.remote_path;
+  } else {
+    titleEl.textContent = 'Nouveau mapping Nextcloud → RAG';
+    btn.textContent = 'Créer le mapping →';
+
+    S.selPath = '/';
+    S.selInterval = 15;
+    document.getElementById('f-coll').value = '';
+    document.getElementById('f-label').value = '';
+    document.getElementById('f-start-at').value = '';
+    document.getElementById('sel-path').textContent = '—';
+    document.querySelectorAll('.int-btn').forEach(b =>
+      b.classList.toggle('active', parseInt(b.dataset.v) === 15)
+    );
+    browse('/');
+  }
+
   document.getElementById('modal').classList.add('is-open');
-  browse('/');
 }
-function closeModal() { document.getElementById('modal').classList.remove('is-open'); }
+function closeModal() {
+  document.getElementById('modal').classList.remove('is-open');
+  S.editingId = null;
+}
 function overlayClick(e) { if (e.target.id === 'modal') closeModal(); }
 
 /* Navigateur Nextcloud */
