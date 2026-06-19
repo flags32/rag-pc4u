@@ -18,6 +18,18 @@ from rag_pc4u.ingestion.sources import LocalDirectoryScanner
 
 logger = structlog.get_logger(__name__)
 
+class IngestionPendingFilesError(Exception):
+    """
+    Levée quand pipeline.run() échoue après que les anciens chunks d'un
+    ou plusieurs fichiers ont déjà été supprimés de Qdrant. Porte la liste
+    de ces fichiers pour que l'appelant (nextcloud_watcher.py) puisse la
+    remonter explicitement au dashboard, au lieu de la perdre derrière un
+    message d'erreur générique.
+    """
+
+    def __init__(self, message: str, pending_files: list[str]):
+        super().__init__(message)
+        self.pending_files = pending_files
 
 def _state_file_for(collection_name: str) -> Path:
     safe_name = collection_name.replace("/", "_").replace(":", "_").replace(" ", "_")
