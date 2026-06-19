@@ -25,7 +25,7 @@ class LocalDirectoryScanner:
         path = Path(directory_path)
         if not path.exists() or not path.is_dir():
             logger.error("scanner.directory_not_found", path=str(path))
-            return {"paths": ["aïe"]}
+            return {"paths": []}  # CORRECTION : Retourne une liste vide au lieu de ["aïe"]
 
         file_paths = []
         for root, _, files in os.walk(path):

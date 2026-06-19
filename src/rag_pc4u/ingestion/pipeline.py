@@ -31,6 +31,7 @@ from rag_pc4u.core.custom_components.csv_converter import CSVRowToDocument
 # Import unique depuis custom_components — aucune duplication
 from rag_pc4u.core.custom_components.enricher import MetadataEnricher
 from rag_pc4u.core.custom_components.extensionless import ExtensionlessToDocument
+from rag_pc4u.core.custom_components.structured_converter import StructuredDataToDocument
 
 logger = logging.getLogger(__name__)
 
@@ -193,10 +194,12 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
             "application/vnd.openxmlformats-officedocument.presentationml.presentation",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "text/html",
-            # Nouveaux types MIME pour les images
             "image/jpeg",
             "image/png",
-            "image/tiff"
+            "image/tiff",  # CORRECTION : Virgule ajoutée ici
+            "application/json",
+            "application/xml",
+            "text/xml"
         ]),
     )
     pipeline.add_component("docling_converter", _make_docling_converter())
@@ -214,7 +217,7 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
 
     # Ajout du composant CSV
     pipeline.add_component("csv_converter", CSVRowToDocument())
-
+    pipeline.add_component("structured_converter", StructuredDataToDocument())
     # ── Joiners ───────────────────────────────────────────────────────────────
     pipeline.add_component("joiner_txt", DocumentJoiner(join_mode="concatenate"))
     pipeline.add_component("joiner_main", DocumentJoiner(join_mode="concatenate"))
@@ -266,10 +269,15 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
     pipeline.connect("router.text/csv", "csv_converter.sources")
     pipeline.connect("router.unclassified", "extensionless_converter.sources")
 
+    pipeline.connect("router.application/json", "structured_converter.sources")
+    pipeline.connect("router.application/xml", "structured_converter.sources")
+    pipeline.connect("router.text/xml", "structured_converter.sources")
+
     # 2. Collecte des formats textuels purs (qui doivent être découpés)
     pipeline.connect("txt_converter.documents", "joiner_txt.documents")
     pipeline.connect("md_converter.documents", "joiner_txt.documents")
     pipeline.connect("extensionless_converter.documents", "joiner_txt.documents")
+
 
     # 3. Nettoyage et découpage de la branche texte
     pipeline.connect("joiner_txt.documents", "cleaner.documents")
@@ -278,8 +286,9 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
     # 4. Fusion finale : chunks PDF + chunks texte + chunks CSV
     pipeline.connect("docling_converter.documents", "joiner_main.documents")
     pipeline.connect("splitter.documents", "joiner_main.documents")
-    # Le CSV rejoint le pipeline ici (bypass du splitter !)
+
     pipeline.connect("csv_converter.documents", "joiner_main.documents")
+    pipeline.connect("structured_converter.documents", "joiner_main.documents")
 
     # 5. Enrichissement → embeddings → stockage
     pipeline.connect("joiner_main.documents", "enricher.documents")
