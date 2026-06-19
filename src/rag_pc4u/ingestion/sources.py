@@ -17,7 +17,7 @@ class LocalDirectoryScanner:
     """
 
     def __init__(self, allowed_extensions: List[str] = None):
-        self.allowed_extensions = allowed_extensions or ["", ".txt", ".pdf", ".md"]
+        self.allowed_extensions = allowed_extensions or ["", ".txt", ".md", ".pdf", ".csv", ".docx", ".pptx", ".xlsx", ".html"]
 
     @component.output_types(paths=List[Path])
     def run(self, directory_path: str):
@@ -25,7 +25,7 @@ class LocalDirectoryScanner:
         path = Path(directory_path)
         if not path.exists() or not path.is_dir():
             logger.error("scanner.directory_not_found", path=str(path))
-            return {"paths": []}
+            return {"paths": ["aïe"]}
 
         file_paths = []
         for root, _, files in os.walk(path):

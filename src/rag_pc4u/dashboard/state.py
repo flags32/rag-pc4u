@@ -172,6 +172,11 @@ def update_mapping_after_sync(mapping_id: str, sync_stats: dict) -> None:
             k: sync_stats.get(k, 0)
             for k in ("new", "modified", "deleted", "errors")
         }
+        # Fichiers dont les anciens chunks Qdrant ont été supprimés mais
+        # dont la réindexation n'a pas été confirmée (cf. run.py /
+        # IngestionPendingFilesError). Vide en fonctionnement normal —
+        # non vide signifie qu'il faut relancer une sync ou investiguer.
+        m["pending_files"] = sync_stats.get("pending_files", [])
         _save(state)
 
 

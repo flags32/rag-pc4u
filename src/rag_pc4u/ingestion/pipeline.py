@@ -148,7 +148,8 @@ def _extract_source_paths(
 
 
 def _make_docling_converter() -> PatchedDoclingConverter:
-    pdf_pipeline_options = PdfPipelineOptions(do_ocr=False)
+    # do_ocr=True active l'OCR pour extraire le texte des PDF scannés et des images
+    pdf_pipeline_options = PdfPipelineOptions(do_ocr=True)
     doc_converter = DocumentConverter(
         format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_pipeline_options)
@@ -180,12 +181,25 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
     pipeline = Pipeline()
 
     # ── Routage et conversion ─────────────────────────────────────────────────
-    # Ajout du type MIME pour le CSV
+    # Ajout du type MIME pour le CSV, le web, l'office, et désormais les images
     pipeline.add_component(
         "router",
-        FileTypeRouter(mime_types=["text/plain", "application/pdf", "text/markdown", "text/csv"]),
+        FileTypeRouter(mime_types=[
+            "text/plain",
+            "application/pdf",
+            "text/markdown",
+            "text/csv",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "text/html",
+            # Nouveaux types MIME pour les images
+            "image/jpeg",
+            "image/png",
+            "image/tiff"
+        ]),
     )
-    pipeline.add_component("pdf_converter", _make_docling_converter())
+    pipeline.add_component("docling_converter", _make_docling_converter())
     # store_full_path=True est OBLIGATOIRE ici : sans ce paramètre, les
     # versions récentes de Haystack ne stockent QUE le nom du fichier dans
     # meta.file_path (pas le chemin absolu complet). run.py et
@@ -237,8 +251,16 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
 
     # ── Câblage ───────────────────────────────────────────────────────────────
 
-    # 1. Routage vers les convertisseurs (ajout du CSV)
-    pipeline.connect("router.application/pdf", "pdf_converter.sources")
+    # 1. Routage vers les convertisseurs (ajout du CSV, de l'Office et des Images)
+    pipeline.connect("router.application/pdf", "docling_converter.sources")
+    pipeline.connect("router.application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docling_converter.sources")
+    pipeline.connect("router.application/vnd.openxmlformats-officedocument.presentationml.presentation", "docling_converter.sources")
+    pipeline.connect("router.application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "docling_converter.sources")
+    pipeline.connect("router.text/html", "docling_converter.sources")
+    pipeline.connect("router.image/jpeg", "docling_converter.sources")
+    pipeline.connect("router.image/png", "docling_converter.sources")
+    pipeline.connect("router.image/tiff", "docling_converter.sources")
+
     pipeline.connect("router.text/plain", "txt_converter.sources")
     pipeline.connect("router.text/markdown", "md_converter.sources")
     pipeline.connect("router.text/csv", "csv_converter.sources")
@@ -254,7 +276,7 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
     pipeline.connect("cleaner.documents", "splitter.documents")
 
     # 4. Fusion finale : chunks PDF + chunks texte + chunks CSV
-    pipeline.connect("pdf_converter.documents", "joiner_main.documents")
+    pipeline.connect("docling_converter.documents", "joiner_main.documents")
     pipeline.connect("splitter.documents", "joiner_main.documents")
     # Le CSV rejoint le pipeline ici (bypass du splitter !)
     pipeline.connect("csv_converter.documents", "joiner_main.documents")

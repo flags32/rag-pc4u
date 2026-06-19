@@ -25,7 +25,7 @@ import structlog
 
 from rag_pc4u.core.config import settings
 from rag_pc4u.core.tz_utils import now_paris_naive
-from rag_pc4u.ingestion.run import run_folder_ingestion
+from rag_pc4u.ingestion.run import run_folder_ingestion, IngestionPendingFilesError
 
 logger = structlog.get_logger(__name__)
 
@@ -293,6 +293,10 @@ class NextcloudWatcher:
             "started_at": started_at.isoformat(),
             "finished_at": None,
             "status": "running",
+            # Fichiers temporairement invisibles du RAG : anciens chunks
+            # supprimés mais réindexation pas encore confirmée (cf.
+            # run_folder_ingestion). Vide en fonctionnement normal.
+            "pending_files": [],
         }
 
         logger.info(
@@ -350,7 +354,21 @@ class NextcloudWatcher:
         # 4. Ingestion incrémentale si des changements ont eu lieu
         if stats["new"] or stats["modified"] or stats["deleted"]:
             try:
-                run_folder_ingestion(str(local_dir), collection_name)
+                ingestion_result = run_folder_ingestion(str(local_dir), collection_name)
+                stats["pending_files"] = ingestion_result.get("fichiers_en_attente", [])
+            except IngestionPendingFilesError as e:
+                logger.error(
+                    "nextcloud.ingestion_failed",
+                    error=str(e),
+                    pending_files=e.pending_files,
+                )
+                stats.update(
+                    status="error",
+                    error_message=str(e),
+                    finished_at=now_paris_naive().isoformat(),
+                    pending_files=e.pending_files,
+                )
+                return stats
             except Exception as e:
                 logger.error("nextcloud.ingestion_failed", error=str(e))
                 stats.update(status="error", error_message=str(e),
