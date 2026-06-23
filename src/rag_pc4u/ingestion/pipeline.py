@@ -114,14 +114,29 @@ class PatchedDoclingConverter(DoclingConverter):
                 doc.meta["file_path"] = source_paths[binary_hash]
                 continue
 
-            # 3. Dernier recours : source unique
+            # 3. Dernier recours : source unique OU source trouvée via chemin exact
+            # Point 7 — Gros fichiers : Docling peut ne pas renseigner dl_meta.origin
+            # correctement sur de très gros fichiers. Si on n'a qu'une source dans
+            # la liste (cas systématique avec la parallélisation — chaque worker
+            # traite un seul fichier à la fois), on l'utilise directement.
             if len(source_paths) == 1:
                 doc.meta["file_path"] = next(iter(source_paths.values()))
-            else:
-                logger.warning(
-                    "PatchedDoclingConverter: impossible de déterminer file_path "
-                    "pour doc.id=%s (meta=%r)", doc.id, doc.meta
+            elif len(source_paths) > 1:
+                # Tentative de correspondance via le nom du fichier (dernier segment
+                # du href Docling vs clé du chemin source) comme ultime fallback.
+                doc_name = Path(path_from_docling or "").name
+                matched = next(
+                    (v for k, v in source_paths.items()
+                     if isinstance(k, str) and Path(k).name == doc_name),
+                    None,
                 )
+                if matched:
+                    doc.meta["file_path"] = matched
+                else:
+                    logger.warning(
+                        "PatchedDoclingConverter: impossible de déterminer file_path "
+                        "pour doc.id=%s (meta=%r)", doc.id, doc.meta
+                    )
 
         return {"documents": docs}
 
@@ -131,7 +146,11 @@ def _extract_source_paths(
 ) -> Dict[Any, str]:
     """
     Construit un dict {clé → chemin_str} à partir des sources passées à Docling.
-    La clé est le binary_hash pour un ByteStream, ou le chemin str pour un Path.
+
+    Point 7 — Gros fichiers : pour les ByteStream, on utilise en priorité
+    file_path (extrait de src.meta) comme clé, car hash(src.data) peut être
+    coûteux ou échouer silencieusement sur de très gros objets en mémoire.
+    Le hash sur les données brutes n'est utilisé qu'en dernier recours.
     """
     result: Dict[Any, str] = {}
     for src in sources:
@@ -141,10 +160,15 @@ def _extract_source_paths(
         elif isinstance(src, ByteStream):
             fp = (src.meta or {}).get("file_path", "")
             if fp:
+                # Clé primaire : le chemin lui-même — garanti unique par fichier,
+                # jamais perdu même sur un ByteStream de plusieurs Go.
+                result[str(fp)] = str(fp)
+                # Clé secondaire : hash des données pour rétrocompatibilité
+                # avec le code qui utilise binary_hash comme clé de lookup.
                 try:
                     result[hash(src.data)] = str(fp)
                 except Exception:
-                    pass
+                    pass  # Gros fichier : on se contente de la clé primaire
     return result
 
 

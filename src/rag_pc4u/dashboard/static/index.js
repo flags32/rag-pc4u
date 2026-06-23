@@ -1,21 +1,11 @@
-/* État client  */
-const S = {
-  mappings:    [],
-  history:     [],
-  liveData:    {},  // mapping_id → SSE payload
-  selPath:     '/',
-  selInterval: 15,
-  editingId:   null,  // null = création, sinon id du mapping en cours d'édition
-};
-
-/* Init */
+/* */
 async function init() {
   await Promise.all([loadStatus(), loadMappings(), loadHistory()]);
   startSSE();
   setInterval(() => { loadHistory(); }, 30_000);
 }
 
-/* API helpers */
+/*  API helper */
 async function api(url, opts = {}) {
   const r = await fetch(url, {
     headers: { 'Content-Type': 'application/json' },
@@ -28,14 +18,13 @@ async function api(url, opts = {}) {
   return r.json();
 }
 
-/* Status */
+/*  Status */
 async function loadStatus() {
   try {
     const d = await api('/api/status');
     const dot  = document.getElementById('dot');
     const text = document.getElementById('nc-status-text');
     const url  = document.getElementById('nc-url');
-
     dot.classList.remove('checking');
     if (d.nextcloud_connected) {
       dot.classList.add('ok');
@@ -45,8 +34,7 @@ async function loadStatus() {
       text.textContent = 'Nextcloud non joignable';
     }
     url.textContent = d.nextcloud_url ? `${d.nextcloud_user}@${d.nextcloud_url}` : '';
-
-    setStatVal('s-today',  d.syncs_today ?? 0);
+    setStatVal('s-today',  d.syncs_today  ?? 0);
     setStatVal('s-errors', d.errors_today ?? 0);
   } catch {
     document.getElementById('dot').className = 'status-dot err';
@@ -54,7 +42,7 @@ async function loadStatus() {
   }
 }
 
-/* Mappings */
+/*  Mappings */
 async function loadMappings() {
   try {
     const data = await api('/api/mappings');
@@ -65,28 +53,40 @@ async function loadMappings() {
   } catch (e) { console.error('loadMappings', e); }
 }
 
-function renderMappings() {
+/* Point 1 — Recherche en temps réel côté client (pas d'aller-retour API) */
+function filterMappings() {
+  const q = document.getElementById('search-mappings').value.trim().toLowerCase();
+  if (!q) { renderMappings(); return; }
+  const filtered = S.mappings.filter(m =>
+    m.label.toLowerCase().includes(q) ||
+    m.collection_name.toLowerCase().includes(q) ||
+    (m.remote_paths || []).some(p => p.toLowerCase().includes(q))
+  );
+  renderMappings(filtered);
+}
+
+function renderMappings(list = S.mappings) {
   const el = document.getElementById('mappings-container');
-  if (!S.mappings.length) {
+  if (!list.length) {
     el.innerHTML = `
       <div class="empty-state">
         <div class="empty-icon">📡</div>
-        <div class="empty-title">Aucun mapping configuré</div>
-        <div class="empty-sub">Créez votre premier mapping pour démarrer l'indexation automatique</div>
-        <button class="btn btn-primary" onclick="openModal()">+ Créer un mapping</button>
+        <div class="empty-title">${S.mappings.length ? 'Aucun résultat' : 'Aucun mapping configuré'}</div>
+        <div class="empty-sub">${S.mappings.length ? 'Modifiez votre recherche' : 'Créez votre premier mapping pour démarrer l\'indexation automatique'}</div>
+        ${S.mappings.length ? '' : '<button class="btn btn-primary" onclick="openModal()">+ Créer un mapping</button>'}
       </div>`;
     return;
   }
-  el.innerHTML = S.mappings.map(m => cardHTML(m)).join('');
+  el.innerHTML = list.map(m => cardHTML(m)).join('');
 }
 
 function cardHTML(m) {
-  const live = S.liveData[m.id] || {};
-  const inProg    = live.in_progress ?? m.in_progress ?? false;
-  const status    = live.last_status ?? m.last_status;
-  const stats     = live.last_stats  ?? m.last_stats;
-  const lastSync  = live.last_sync   ?? m.last_sync;
-  const nextRun   = live.next_run    ?? m.next_run;
+  const live    = S.liveData[m.id] || {};
+  const inProg  = live.in_progress ?? m.in_progress ?? false;
+  const status  = live.last_status ?? m.last_status;
+  const stats   = live.last_stats  ?? m.last_stats;
+  const lastSync = live.last_sync  ?? m.last_sync;
+  const nextRun  = live.next_run   ?? m.next_run;
 
   const stClass = inProg ? 'status-running'
     : status === 'success' ? 'status-success'
@@ -109,17 +109,27 @@ function cardHTML(m) {
       ${stats.errors ? `<span class="pill pill-err">! ${stats.errors} erreur${stats.errors > 1 ? 's' : ''}</span>` : ''}
     </div>` : '';
 
+  /* Point 2 — affichage multi-chemins. remote_paths est toujours une liste
+     grâce à _normalize_mapping dans state.py ; remote_path (ancien format)
+     peut encore apparaître sur des enregistrements non migrés en base. */
+  const paths = m.remote_paths || (m.remote_path ? [m.remote_path] : []);
+  const pathsHtml = paths.length === 1
+    ? `<span class="path-remote">${esc(paths[0])}</span>
+       <span class="path-arrow">→</span>
+       <span class="path-coll">${esc(m.collection_name)}</span>`
+    : `<div class="path-multi">
+         ${paths.map(p => `<span class="path-tag">📁 ${esc(p)}</span>`).join('')}
+         <span class="path-arrow-multi">→</span>
+         <span class="path-coll">${esc(m.collection_name)}</span>
+       </div>`;
+
   return `
     <div class="mapping-card ${stClass} ${inProg ? 'is-syncing' : ''}" id="card-${m.id}">
       <div class="card-top">
         <div class="card-label">${esc(m.label)}</div>
         ${badge}
       </div>
-      <div class="card-path">
-        <span class="path-remote">${esc(m.remote_path)}</span>
-        <span class="path-arrow">→</span>
-        <span class="path-coll">${esc(m.collection_name)}</span>
-      </div>
+      <div class="card-path">${pathsHtml}</div>
       ${pills}
       <div class="card-meta">
         <div class="meta-item"><span class="meta-k">Dernière sync :</span><span>${relAgo(lastSync)}</span></div>
@@ -141,57 +151,37 @@ function cardHTML(m) {
     </div>`;
 }
 
-/* SSE — mises à jour temps réel */
+/* ── SSE ─────────────────────────────────────────────────────────────────── */
 function startSSE() {
   const es = new EventSource('/api/events');
   es.onmessage = (e) => {
     const updates = JSON.parse(e.data);
     let runningCount = 0;
-
     updates.forEach(u => {
       const prev = S.liveData[u.id];
       S.liveData[u.id] = u;
       if (u.in_progress) runningCount++;
-
-      // Si une sync vient de se terminer, OU si la date de dernière sync a
-      // changé sans que l'état 'in_progress' ait été capté entre deux ticks
-      // → on rafraîchit la carte complète (garde-fou, sans risque)
       if ((prev?.in_progress && !u.in_progress) || (prev && prev.last_sync !== u.last_sync)) {
-        loadMappings();
-        loadHistory();
-        loadStatus();
+        loadMappings(); loadHistory(); loadStatus();
       } else {
-        // Mise à jour légère de la carte existante
         patchCard(u);
       }
     });
-
     setStatVal('s-running', runningCount);
   };
-  es.onerror = () => {
-    es.close();
-    setTimeout(startSSE, 5_000);
-  };
+  es.onerror = () => { es.close(); setTimeout(startSSE, 5_000); };
 }
 
 function patchCard(u) {
   const card = document.getElementById(`card-${u.id}`);
   if (!card) return;
-
-  // Syncing pulse
   card.classList.toggle('is-syncing', u.in_progress);
   card.classList.toggle('status-running', u.in_progress);
-
-  // Badge
   const badge = card.querySelector('.badge');
-  if (badge) {
-    if (u.in_progress) {
-      badge.className = 'badge badge-running';
-      badge.textContent = '⟳ Sync…';
-    }
+  if (badge && u.in_progress) {
+    badge.className = 'badge badge-running';
+    badge.textContent = '⟳ Sync…';
   }
-
-  // Bouton sync
   const btn = card.querySelector('.btn-sync');
   if (btn) {
     btn.disabled = u.in_progress;
@@ -202,44 +192,196 @@ function patchCard(u) {
   }
 }
 
-/* Actions */
+/* ── Actions ─────────────────────────────────────────────────────────────── */
 async function triggerSync(id) {
   try {
     const r = await api(`/api/sync/${id}`, { method: 'POST' });
-    if (r.status === 'started') toast('Synchronisation démarrée !', 'success');
+    if (r.status === 'started')       toast('Synchronisation démarrée !', 'success');
     else if (r.status === 'already_running') toast('Sync déjà en cours…', 'info');
   } catch (e) { toast(`Erreur : ${e.message}`, 'error'); }
 }
 
 async function delMapping(id, label) {
-  if (!confirm(`Supprimer le mapping "${label}" ?\n\nLes fichiers cachés en local seront conservés mais plus mis à jour.`)) return;
+  if (!confirm(`Supprimer le mapping "${label}" ?\n\nLe cache local sera nettoyé automatiquement.`)) return;
   try {
     await api(`/api/mappings/${id}`, { method: 'DELETE' });
-    toast('Mapping supprimé', 'success');
+    toast('Mapping et cache supprimés', 'success');
     loadMappings();
   } catch (e) { toast(`Erreur : ${e.message}`, 'error'); }
 }
 
-async function createMapping() {
-  const path  = S.selPath;
-  const coll  = document.getElementById('f-coll').value.trim();
-  const label = document.getElementById('f-label').value.trim();
-  const startAt = document.getElementById('f-start-at').value;
-  const isEdit = !!S.editingId;
+/* ── Modal ───────────────────────────────────────────────────────────────── */
+async function openModal(mappingId = null) {
+  S.editingId  = mappingId;
+  S.selPaths   = [];
+  S.selInterval = 15;
 
-  if (!path || path === '/') { toast('Sélectionnez un dossier Nextcloud', 'error'); return; }
-  if (!coll)                  { toast('Entrez un nom de collection RAG', 'error'); return; }
+  const titleEl = document.getElementById('modal-title');
+  const btn     = document.getElementById('btn-create');
+
+  if (mappingId) {
+    const m = S.mappings.find(x => x.id === mappingId);
+    if (!m) { toast('Mapping introuvable', 'error'); return; }
+
+    titleEl.textContent = 'Modifier le mapping';
+    btn.textContent     = 'Enregistrer →';
+    S.selInterval = m.interval_minutes;
+
+    /* Point 2 — rétrocompatibilité : remote_paths liste OU remote_path string */
+    S.selPaths = [...(m.remote_paths || (m.remote_path ? [m.remote_path] : []))];
+
+    document.getElementById('f-coll').value    = m.collection_name;
+    document.getElementById('f-label').value   = m.label || '';
+    document.getElementById('f-start-at').value = m.start_at || '';
+
+    /* Navigateur : ouvre sur le dossier parent du premier chemin */
+    const firstPath = S.selPaths[0] || '/';
+    const parent = firstPath.split('/').slice(0, -1).join('/') || '/';
+    await browse(parent);
+
+  } else {
+    titleEl.textContent = 'Nouveau mapping Nextcloud → RAG';
+    btn.textContent     = 'Créer le mapping →';
+    document.getElementById('f-coll').value     = '';
+    document.getElementById('f-label').value    = '';
+    document.getElementById('f-start-at').value = '';
+    browse('/');
+  }
+
+  /* Sync de l'affichage des chemins et des boutons d'intervalle */
+  renderSelPaths();
+  document.querySelectorAll('.int-btn').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.v) === S.selInterval)
+  );
+
+  document.getElementById('modal').classList.add('is-open');
+}
+
+function closeModal() {
+  document.getElementById('modal').classList.remove('is-open');
+  S.editingId = null;
+  S.selPaths  = [];
+}
+function overlayClick(e) { if (e.target.id === 'modal') closeModal(); }
+
+/* ── Gestion multi-chemins (point 2) ─────────────────────────────────────── */
+
+/* Ajoute le chemin actuellement affiché dans le navigateur à la liste */
+function addCurrentPath() {
+  const pathEl = document.getElementById('sel-path');
+  const path = pathEl.textContent.trim();
+  if (!path || path === '—' || path === '/') {
+    toast('Naviguez jusqu\'à un dossier ou fichier à ajouter', 'info');
+    return;
+  }
+  if (S.selPaths.includes(path)) {
+    toast('Ce chemin est déjà dans la liste', 'info');
+    return;
+  }
+  S.selPaths.push(path);
+  renderSelPaths();
+}
+
+/* Supprime un chemin de la liste */
+function removeSelPath(idx) {
+  S.selPaths.splice(idx, 1);
+  renderSelPaths();
+}
+
+/* Affiche la liste des chemins sélectionnés sous le navigateur */
+function renderSelPaths() {
+  const el = document.getElementById('sel-paths-list');
+  if (!el) return;
+  if (!S.selPaths.length) {
+    el.innerHTML = '<div class="sel-paths-empty">Aucun chemin sélectionné — naviguez et cliquez « + Ajouter »</div>';
+    return;
+  }
+  el.innerHTML = S.selPaths.map((p, i) => `
+    <div class="sel-path-tag">
+      <span class="sel-path-icon">📁</span>
+      <span class="sel-path-text">${esc(p)}</span>
+      <button class="sel-path-remove" onclick="removeSelPath(${i})" title="Retirer ce chemin">✕</button>
+    </div>`).join('');
+}
+
+/* ── Navigateur Nextcloud ─────────────────────────────────────────────────── */
+async function browse(path) {
+  /* On ne met plus à jour S.selPaths ici — le navigateur est juste un
+     outil de navigation. Le chemin devient sélectionné seulement via
+     addCurrentPath() ou un clic sur un fichier individuel. */
+  document.getElementById('sel-path').textContent = path;
+  updateBreadcrumb(path);
+
+  const listEl = document.getElementById('browser-list');
+  listEl.innerHTML = '<div class="browser-loading">Chargement…</div>';
+
+  try {
+    const d = await api(`/api/nextcloud/browse?path=${encodeURIComponent(path)}`);
+
+    /* Point 2 — affiche aussi les fichiers individuels pour pouvoir les sélectionner */
+    const dirs = (d.directories || []).map(dir => `
+      <div class="browser-dir" onclick="browse('${esc(dir.path)}')">
+        <span class="browser-dir-icon">📁</span>
+        <span class="browser-dir-name">${esc(dir.name)}</span>
+        <span class="browser-dir-arrow">›</span>
+      </div>`).join('');
+
+    const files = (d.files || []).map(f => `
+      <div class="browser-file" onclick="selectFile('${esc(path + (path.endsWith('/') ? '' : '/') + f.name)}')">
+        <span class="browser-dir-icon">📄</span>
+        <span class="browser-dir-name">${esc(f.name)}</span>
+        <span class="browser-file-size">${fmtSize(f.size)}</span>
+      </div>`).join('');
+
+    if (!dirs && !files) {
+      listEl.innerHTML = '<div class="browser-empty">📁 Dossier vide</div>';
+    } else {
+      listEl.innerHTML = dirs + files;
+    }
+  } catch (e) {
+    listEl.innerHTML = `<div class="browser-error">Erreur : ${e.message}</div>`;
+  }
+}
+
+/* Sélectionne un fichier individuel directement depuis le navigateur */
+function selectFile(filePath) {
+  document.getElementById('sel-path').textContent = filePath;
+}
+
+function updateBreadcrumb(path) {
+  const bc = document.getElementById('bc');
+  const parts = path.split('/').filter(Boolean);
+  let items = [`<span class="bc-item" onclick="browse('/')">⌂</span>`];
+  let cur = '';
+  parts.forEach(p => {
+    cur += '/' + p;
+    const c = cur;
+    items.push(`<span class="bc-sep">›</span>`);
+    items.push(`<span class="bc-item" onclick="browse('${c}')">${esc(p)}</span>`);
+  });
+  bc.innerHTML = items.join('');
+}
+
+/* Création / Modification  */
+async function createMapping() {
+  const coll    = document.getElementById('f-coll').value.trim();
+  const label   = document.getElementById('f-label').value.trim();
+  const startAt = document.getElementById('f-start-at').value;
+  const isEdit  = !!S.editingId;
+
+  if (!S.selPaths.length) { toast('Ajoutez au moins un chemin Nextcloud', 'error'); return; }
+  if (!coll)               { toast('Entrez un nom de collection RAG', 'error');       return; }
 
   const btn = document.getElementById('btn-create');
-  btn.disabled = true;
+  btn.disabled    = true;
   btn.textContent = isEdit ? 'Enregistrement…' : 'Création…';
 
   const payload = {
-    remote_path: path,
-    collection_name: coll,
+    remote_paths:     S.selPaths,
+    collection_name:  coll,
     interval_minutes: S.selInterval,
-    label: label || null,
-    start_at: startAt || null,
+    label:            label || null,
+    start_at:         startAt || null,
   };
 
   try {
@@ -254,19 +396,19 @@ async function createMapping() {
         method: 'POST',
         body: JSON.stringify(payload),
       });
-      toast(startAt ? 'Mapping créé — sync planifiée' : 'Mapping créé — 1ère sync démarrée en arrière-plan', 'success');
+      toast(startAt ? 'Mapping créé — sync planifiée' : 'Mapping créé — 1ère sync en cours', 'success');
     }
     closeModal();
     loadMappings();
   } catch (e) {
     toast(`Erreur : ${e.message}`, 'error');
   } finally {
-    btn.disabled = false;
+    btn.disabled    = false;
     btn.textContent = isEdit ? 'Enregistrer →' : 'Créer le mapping →';
   }
 }
 
-/* Historique */
+/*  Historique */
 async function loadHistory() {
   const fid = document.getElementById('hist-filter').value;
   const url = fid ? `/api/history?limit=40&mapping_id=${fid}` : '/api/history?limit=40';
@@ -286,7 +428,7 @@ function renderHistory() {
   el.innerHTML = S.history.map(h => {
     const m = S.mappings.find(x => x.id === h.mapping_id);
     const lbl = m ? m.label : h.mapping_id;
-    const ok = h.status === 'success';
+    const ok      = h.status === 'success';
     const running = h.status === 'running';
     const iconCls = ok ? 'hist-icon-ok' : running ? 'hist-icon-run' : 'hist-icon-err';
     const icon    = ok ? '✓' : running ? '⟳' : '✗';
@@ -297,7 +439,6 @@ function renderHistory() {
         <span class="pill pill-del">-${h.deleted ?? 0}</span>
         ${h.errors ? `<span class="pill pill-err">!${h.errors}</span>` : ''}
       </div>` : `<div class="hist-err-msg">${esc((h.error_message || '').slice(0, 80))}</div>`;
-
     return `
       <div class="hist-item">
         <div class="hist-icon ${iconCls}">${icon}</div>
@@ -319,103 +460,7 @@ function updateHistFilter() {
     ).join('');
 }
 
-/* Modal */
-async function openModal(mappingId = null) {
-  S.editingId = mappingId;
-  const titleEl = document.getElementById('modal-title');
-  const btn = document.getElementById('btn-create');
-
-  if (mappingId) {
-    const m = S.mappings.find(x => x.id === mappingId);
-    if (!m) { toast('Mapping introuvable', 'error'); return; }
-
-    titleEl.textContent = 'Modifier le mapping';
-    btn.textContent = 'Enregistrer →';
-
-    S.selPath = m.remote_path;
-    S.selInterval = m.interval_minutes;
-    document.getElementById('f-coll').value = m.collection_name;
-    document.getElementById('f-label').value = m.label || '';
-    document.getElementById('f-start-at').value = m.start_at || '';
-    document.getElementById('sel-path').textContent = m.remote_path;
-    document.querySelectorAll('.int-btn').forEach(b =>
-      b.classList.toggle('active', parseInt(b.dataset.v) === m.interval_minutes)
-    );
-    // browse() est appelé pour afficher le contenu du DOSSIER PARENT (contexte
-    // visuel utile), mais browse() écrase S.selPath avec ce chemin parent.
-    // On réaffirme donc le vrai chemin du mapping juste après, sinon
-    // "Enregistrer" sans clic dans le navigateur sauvegarderait le parent
-    // au lieu du chemin réel édité.
-    await browse(m.remote_path.split('/').slice(0, -1).join('/') || '/');
-    S.selPath = m.remote_path;
-    document.getElementById('sel-path').textContent = m.remote_path;
-  } else {
-    titleEl.textContent = 'Nouveau mapping Nextcloud → RAG';
-    btn.textContent = 'Créer le mapping →';
-
-    S.selPath = '/';
-    S.selInterval = 15;
-    document.getElementById('f-coll').value = '';
-    document.getElementById('f-label').value = '';
-    document.getElementById('f-start-at').value = '';
-    document.getElementById('sel-path').textContent = '—';
-    document.querySelectorAll('.int-btn').forEach(b =>
-      b.classList.toggle('active', parseInt(b.dataset.v) === 15)
-    );
-    browse('/');
-  }
-
-  document.getElementById('modal').classList.add('is-open');
-}
-function closeModal() {
-  document.getElementById('modal').classList.remove('is-open');
-  S.editingId = null;
-}
-function overlayClick(e) { if (e.target.id === 'modal') closeModal(); }
-
-/* Navigateur Nextcloud */
-async function browse(path) {
-  S.selPath = path;
-  document.getElementById('sel-path').textContent = path;
-
-  // Breadcrumb
-  updateBreadcrumb(path);
-
-  const listEl = document.getElementById('browser-list');
-  listEl.innerHTML = '<div class="browser-loading">Chargement…</div>';
-
-  try {
-    const d = await api(`/api/nextcloud/browse?path=${encodeURIComponent(path)}`);
-    if (!d.directories.length) {
-      listEl.innerHTML = '<div class="browser-empty">📁 Aucun sous-dossier ici</div>';
-    } else {
-      listEl.innerHTML = d.directories.map(dir => `
-        <div class="browser-dir" onclick="browse('${esc(dir.path)}')">
-          <span class="browser-dir-icon">📁</span>
-          <span class="browser-dir-name">${esc(dir.name)}</span>
-          <span class="browser-dir-arrow">›</span>
-        </div>`).join('');
-    }
-  } catch (e) {
-    listEl.innerHTML = `<div class="browser-error">Erreur : ${e.message}</div>`;
-  }
-}
-
-function updateBreadcrumb(path) {
-  const bc = document.getElementById('bc');
-  const parts = path.split('/').filter(Boolean);
-  let items = [`<span class="bc-item" onclick="browse('/')">⌂</span>`];
-  let cur = '';
-  parts.forEach(p => {
-    cur += '/' + p;
-    const c = cur;
-    items.push(`<span class="bc-sep">›</span>`);
-    items.push(`<span class="bc-item" onclick="browse('${c}')">${esc(p)}</span>`);
-  });
-  bc.innerHTML = items.join('');
-}
-
-/* Intervalle */
+/* Intervalle (point 6 — hebdomadaire)  */
 function pickInt(btn) {
   S.selInterval = parseInt(btn.dataset.v);
   document.querySelectorAll('.int-btn').forEach(b => b.classList.remove('active'));
@@ -426,20 +471,19 @@ function pickInt(btn) {
 function setStatVal(id, val) {
   const el = document.getElementById(id);
   if (!el) return;
-  const prev = el.textContent;
-  if (String(prev) !== String(val)) {
+  if (String(el.textContent) !== String(val)) {
     el.textContent = val;
     el.classList.remove('flash');
-    void el.offsetWidth; // reflow
+    void el.offsetWidth;
     el.classList.add('flash');
   }
 }
 
-/* Toasts */
+/*  Toasts  */
 function toast(msg, type = 'info') {
   const z = document.getElementById('toast-zone');
   const t = document.createElement('div');
-  t.className = `toast t-${type}`;
+  t.className  = `toast t-${type}`;
   t.textContent = msg;
   z.appendChild(t);
   requestAnimationFrame(() => { requestAnimationFrame(() => t.classList.add('show')); });
@@ -449,22 +493,22 @@ function toast(msg, type = 'info') {
   }, 3200);
 }
 
-/* Helpers temps / format */
+/* ── Helpers ─────────────────────────────────────────────────────────────── */
 function relAgo(iso) {
   if (!iso) return '—';
   const s = Math.round((Date.now() - new Date(iso)) / 1000);
-  if (s < 5)    return 'à l\'instant';
-  if (s < 60)   return `il y a ${s}s`;
-  if (s < 3600) return `il y a ${Math.floor(s / 60)}min`;
+  if (s < 5)     return 'à l\'instant';
+  if (s < 60)    return `il y a ${s}s`;
+  if (s < 3600)  return `il y a ${Math.floor(s / 60)}min`;
   if (s < 86400) return `il y a ${Math.floor(s / 3600)}h`;
   return `il y a ${Math.floor(s / 86400)}j`;
 }
 function relFuture(iso) {
   if (!iso) return '—';
   const s = Math.round((new Date(iso) - Date.now()) / 1000);
-  if (s <= 0)   return 'maintenant';
-  if (s < 60)   return `dans ${s}s`;
-  if (s < 3600) return `dans ${Math.floor(s / 60)}min`;
+  if (s <= 0)    return 'maintenant';
+  if (s < 60)    return `dans ${s}s`;
+  if (s < 3600)  return `dans ${Math.floor(s / 60)}min`;
   if (s < 86400) return `dans ${Math.floor(s / 3600)}h`;
   return `dans ${Math.floor(s / 86400)}j`;
 }
@@ -476,14 +520,21 @@ function fmtDate(iso) {
   }).format(new Date(iso));
 }
 function fmtInterval(min) {
-  if (min < 60)   return `${min} min`;
-  if (min < 1440) return `${Math.floor(min/60)} h`;
-  return `${Math.floor(min/1440)} j`;
+  if (min < 60)    return `${min} min`;
+  if (min < 1440)  return `${Math.floor(min / 60)} h`;
+  if (min < 10080) return `${Math.floor(min / 1440)} j`;
+  return `${Math.floor(min / 10080)} sem`;
+}
+function fmtSize(bytes) {
+  if (!bytes) return '';
+  if (bytes < 1024)       return `${bytes} o`;
+  if (bytes < 1048576)    return `${(bytes / 1024).toFixed(0)} Ko`;
+  return `${(bytes / 1048576).toFixed(1)} Mo`;
 }
 function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-/* Boot */
+/* ── Boot ────────────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', init);

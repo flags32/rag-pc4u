@@ -6,22 +6,25 @@ Fournit :
   - Une API REST pour gérer les mappings et déclencher des syncs
   - Un endpoint SSE pour les mises à jour en temps réel (toutes les 2s)
 
-Architecture :
-  - Un NextcloudWatcher partagé (session HTTP persistante)
-  - Un SyncScheduler APScheduler (jobs en arrière-plan)
-  - Un dict _in_progress pour le statut "live" des syncs
-  - Le state.py pour la persistance (mappings + historique)
+Changements v2 :
+  - remote_path (str) → remote_paths (list[str]) — point 2
+  - Vérification unicité label/collection — point 1
+  - GET /api/mappings/search — recherche par label ou collection — point 1
+  - interval_minutes supporte jusqu'à 10080 (1 semaine) — point 6
+  - DELETE /api/mappings/{id} nettoie le cache Nextcloud local — point 8
+  - MappingCreate/Update migrés vers remote_paths
 """
 
 import asyncio
 import json
+import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import structlog
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.staticfiles import StaticFiles
@@ -38,7 +41,6 @@ logger = structlog.get_logger(__name__)
 
 _scheduler: Optional[SyncScheduler] = None
 _watcher: Optional[NextcloudWatcher] = None
-# mapping_id → True si une sync est en cours (GIL-safe en CPython)
 _in_progress: dict[str, bool] = {}
 
 
@@ -50,7 +52,6 @@ async def lifespan(app: FastAPI):
     _watcher = NextcloudWatcher()
     _scheduler = SyncScheduler()
 
-    # Restaure les jobs depuis l'état persisté, sans exécution immédiate
     for mid, mapping in ds.get_mappings().items():
         if mapping.get("active"):
             _register_job(mid, mapping, run_immediately=False)
@@ -65,7 +66,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RAG PC4U — Nextcloud Dashboard",
     description="Gestion des syncs Nextcloud → Collections RAG",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -73,7 +74,7 @@ CURRENT_DIR = Path(__file__).resolve().parent
 app.mount("/static", StaticFiles(directory=CURRENT_DIR / "static"), name="static")
 
 
-# Helpers
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _register_job(
     mapping_id: str,
@@ -113,8 +114,12 @@ def _execute_sync(mapping_id: str) -> dict:
 
     _in_progress[mapping_id] = True
     try:
+        # Point 2 : on passe remote_paths (list) au watcher.
+        # Rétrocompatibilité : _normalize_mapping dans state.py garantit
+        # que même les anciens mappings avec "remote_path" str ont bien
+        # un champ "remote_paths" list ici.
         stats = _watcher.sync(
-            remote_path=mapping["remote_path"],
+            remote_paths=mapping["remote_paths"],
             collection_name=mapping["collection_name"],
         )
     except Exception as e:
@@ -136,26 +141,85 @@ def _execute_sync(mapping_id: str) -> dict:
     return stats
 
 
-# Schémas Pydantic
+def _cleanup_mapping_cache(mapping: dict) -> None:
+    """
+    Point 8 — Nettoyage du cache Nextcloud local lors de la suppression
+    d'un mapping. Supprime le dossier de cache et les fichiers d'état
+    WebDAV (.nextcloud_etag_*.json) associés à ce mapping.
+    """
+    collection_name = mapping.get("collection_name")
+    remote_paths = mapping.get("remote_paths", [])
+
+    # 1. Cache local des fichiers téléchargés
+    if collection_name:
+        cache_dir = Path(__file__).parent / "nextcloud_cache" / collection_name
+        if cache_dir.exists():
+            try:
+                shutil.rmtree(cache_dir)
+                logger.info(
+                    "dashboard.cache_cleaned",
+                    collection=collection_name,
+                    path=str(cache_dir),
+                )
+            except Exception as e:
+                logger.warning(
+                    "dashboard.cache_cleanup_failed",
+                    collection=collection_name,
+                    error=str(e),
+                )
+
+    # 2. Fichiers d'état ETags WebDAV par chemin distant
+    state_base = Path(__file__).parent / "fichier_injecter"
+    for remote_path in remote_paths:
+        safe = remote_path.replace("/", "_").replace(":", "_").replace(" ", "_").strip("_")
+        etag_file = state_base / f".nextcloud_etag_{safe}.json"
+        if etag_file.exists():
+            try:
+                etag_file.unlink()
+                logger.info("dashboard.etag_cleaned", path=str(etag_file))
+            except Exception as e:
+                logger.warning("dashboard.etag_cleanup_failed", path=str(etag_file), error=str(e))
+
+    # 3. Fichier d'état d'ingestion run.py
+    if collection_name:
+        safe_coll = collection_name.replace("/", "_").replace(":", "_").replace(" ", "_")
+        ingestion_state = (
+            Path(__file__).parent.parent / "ingestion" /
+            f"fichier_injecter/.ingestion_state_{safe_coll}.json"
+        )
+        if ingestion_state.exists():
+            try:
+                ingestion_state.unlink()
+                logger.info("dashboard.ingestion_state_cleaned", path=str(ingestion_state))
+            except Exception as e:
+                logger.warning(
+                    "dashboard.ingestion_state_cleanup_failed",
+                    path=str(ingestion_state),
+                    error=str(e),
+                )
+
+
+# ── Schémas Pydantic ──────────────────────────────────────────────────────────
 
 class MappingCreate(BaseModel):
-    remote_path: str = Field(..., description="Chemin relatif sur Nextcloud, ex: /documents/technique")
+    remote_paths: List[str] = Field(
+        ...,
+        min_length=1,
+        description="Liste de chemins Nextcloud (dossiers ou fichiers individuels).",
+    )
     collection_name: str = Field(..., description="Nom de la collection Qdrant cible")
-    interval_minutes: int = Field(default=15, ge=1, le=1440)
+    # Point 6 : limite haute portée à 10080 min = 7 jours (hebdomadaire)
+    interval_minutes: int = Field(default=15, ge=1, le=10080)
     label: Optional[str] = Field(default=None, description="Libellé affiché dans le dashboard")
     start_at: Optional[str] = Field(default=None, description="Date/heure ISO de la 1ère sync planifiée")
 
 
 class MappingUpdate(BaseModel):
-    """
-    Tous les champs sont optionnels : seuls ceux fournis par le client
-    sont modifiés. start_at est une exception délibérée — voir state.py.
-    """
-    remote_path: Optional[str] = Field(default=None, description="Chemin relatif sur Nextcloud")
-    collection_name: Optional[str] = Field(default=None, description="Nom de la collection Qdrant cible")
-    interval_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
-    label: Optional[str] = Field(default=None, description="Libellé affiché dans le dashboard")
-    start_at: Optional[str] = Field(default=None, description="Date/heure ISO de la prochaine sync planifiée")
+    remote_paths: Optional[List[str]] = Field(default=None, description="Chemins Nextcloud")
+    collection_name: Optional[str] = Field(default=None)
+    interval_minutes: Optional[int] = Field(default=None, ge=1, le=10080)
+    label: Optional[str] = Field(default=None)
+    start_at: Optional[str] = Field(default=None)
 
 
 class SyncResponse(BaseModel):
@@ -163,11 +227,10 @@ class SyncResponse(BaseModel):
     mapping_id: Optional[str] = None
 
 
-# Endpoints
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def serve_dashboard():
-    """Sert le dashboard HTML."""
     html_path = Path(__file__).parent / "templates" / "index.html"
     return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
 
@@ -176,12 +239,6 @@ async def serve_dashboard():
 
 @app.get("/api/status", tags=["Infos"])
 async def api_status():
-    """
-    Retourne le statut général du dashboard :
-    - Connexion Nextcloud (test en direct)
-    - Nombre de jobs actifs
-    - Statistiques du jour
-    """
     connected = _watcher.test_connection()
     counts = ds.get_sync_counts_today()
     return {
@@ -213,73 +270,94 @@ async def api_list_mappings():
     ]
 
 
+@app.get("/api/mappings/search", tags=["Mappings"])
+async def api_search_mappings(
+    label: Optional[str] = Query(default=None, description="Sous-chaîne du libellé (insensible à la casse)"),
+    collection: Optional[str] = Query(default=None, description="Nom exact de la collection Qdrant"),
+):
+    """
+    Point 1 — Recherche de mappings par libellé (sous-chaîne) et/ou
+    par nom de collection (exact). Les deux filtres sont cumulatifs.
+    """
+    return ds.search_mappings(label=label, collection_name=collection)
+
+
 @app.post("/api/mappings", tags=["Mappings"], status_code=201)
 async def api_create_mapping(body: MappingCreate, bg: BackgroundTasks):
     """
-    Crée un nouveau mapping, enregistre le job et démarre la 1ère sync
-    immédiatement en arrière-plan — sauf si une date de départ future
-    a été spécifiée (start_at).
+    Crée un nouveau mapping.
+    Point 1 : rejette les doublons de label ou de collection.
+    Point 2 : accepte plusieurs chemins (remote_paths).
+    Point 6 : intervalle jusqu'à 7 jours (10080 min).
     """
-    mapping = ds.add_mapping(
-        remote_path=body.remote_path,
+    result = ds.add_mapping(
+        remote_paths=body.remote_paths,
         collection_name=body.collection_name,
         interval_minutes=body.interval_minutes,
         label=body.label,
         start_at=body.start_at,
     )
-    _register_job(mapping["id"], mapping, run_immediately=False)
+    if isinstance(result, str):
+        raise HTTPException(409, result)
+
+    _register_job(result["id"], result, run_immediately=False)
     if not body.start_at:
-        # 1ère sync immédiate en arrière-plan pour ne pas bloquer la réponse
-        bg.add_task(_execute_sync, mapping["id"])
-    return mapping
+        bg.add_task(_execute_sync, result["id"])
+    return result
 
 
 @app.put("/api/mappings/{mapping_id}", tags=["Mappings"])
 async def api_update_mapping(mapping_id: str, body: MappingUpdate):
     """
-    Modifie un mapping existant (chemin, collection, intervalle, libellé,
-    date de départ). Le job APScheduler est systématiquement reconstruit
-    après la mise à jour, car un intervalle ou une date de départ modifiés
-    n'auraient AUCUN effet sur le scheduler tant que add_job() n'est pas
-    rappelé — c'est exactement le genre de bug silencieux déjà rencontré
-    ailleurs dans ce projet (cf. le bug initial "ça sync une fois puis
-    s'arrête"), donc on ne prend pas le risque ici.
-
-    Une sync en cours sur ce mapping bloque la modification, pour éviter
-    de changer remote_path/collection_name sous les pieds d'une sync qui
-    tourne déjà avec les anciennes valeurs.
+    Modifie un mapping. Bloque si une sync est en cours.
+    Reconstruit le job APScheduler pour que tout changement d'intervalle
+    ou de start_at soit immédiatement effectif.
     """
     if _in_progress.get(mapping_id):
         raise HTTPException(409, "Une sync est en cours — attendez qu'elle se termine")
 
-    existing = ds.get_mapping(mapping_id)
-    if not existing:
+    if not ds.get_mapping(mapping_id):
         raise HTTPException(404, "Mapping introuvable")
 
-    updated = ds.update_mapping(
+    result = ds.update_mapping(
         mapping_id,
-        remote_path=body.remote_path,
+        remote_paths=body.remote_paths,
         collection_name=body.collection_name,
         interval_minutes=body.interval_minutes,
         label=body.label,
         start_at=body.start_at,
     )
+    if result is None:
+        raise HTTPException(404, "Mapping introuvable")
+    if isinstance(result, str):
+        raise HTTPException(409, result)
 
-    # Reconstruction systématique du job avec les valeurs à jour.
     _scheduler.remove_job(mapping_id)
-    _register_job(mapping_id, updated, run_immediately=False)
-
-    return updated
+    _register_job(mapping_id, result, run_immediately=False)
+    return result
 
 
 @app.delete("/api/mappings/{mapping_id}", tags=["Mappings"])
 async def api_delete_mapping(mapping_id: str):
-    """Supprime un mapping et arrête son job scheduler."""
+    """
+    Supprime un mapping, arrête son job scheduler, et nettoie le cache
+    Nextcloud local associé (point 8).
+    """
     if _in_progress.get(mapping_id):
         raise HTTPException(409, "Une sync est en cours — attendez qu'elle se termine")
+
+    mapping = ds.get_mapping(mapping_id)
+    if not mapping:
+        raise HTTPException(404, "Mapping introuvable")
+
     _scheduler.remove_job(mapping_id)
+
+    # Point 8 : nettoyage cache avant suppression de l'état
+    _cleanup_mapping_cache(mapping)
+
     if not ds.delete_mapping(mapping_id):
         raise HTTPException(404, "Mapping introuvable")
+
     _in_progress.pop(mapping_id, None)
     return {"deleted": mapping_id}
 
@@ -304,7 +382,6 @@ async def api_history(
     limit: int = 50,
     mapping_id: Optional[str] = None,
 ):
-    """Retourne l'historique des syncs, filtrable par mapping."""
     return ds.get_sync_history(limit=limit, mapping_id=mapping_id)
 
 
@@ -312,19 +389,15 @@ async def api_history(
 
 @app.get("/api/nextcloud/browse", tags=["Nextcloud"])
 async def api_browse(path: str = "/"):
-    """
-    Explore l'arborescence Nextcloud.
-    Utilisé par le file-picker du dashboard pour choisir le dossier source.
-    """
+    """Explore l'arborescence Nextcloud (dossiers + fichiers)."""
     try:
         dirs = _watcher.list_remote_dirs(path)
         files_raw = _watcher.list_remote_files(path)
         files = [{"name": f["name"], "size": f["size"]} for f in files_raw]
 
-        # Chemin parent (pour le bouton "Retour")
         from pathlib import PurePosixPath
         parent = str(PurePosixPath(path).parent)
-        parent = None if parent == path or parent == "/" and path == "/" else parent
+        parent = None if parent == path or (parent == "/" and path == "/") else parent
 
         return {
             "path": path,
@@ -341,20 +414,11 @@ async def api_browse(path: str = "/"):
 
 @app.get("/api/events", tags=["Live"], include_in_schema=False)
 async def api_sse():
-    """
-    Server-Sent Events : pousse les mises à jour de statut toutes les 2s.
-    Le client JS reconnecte automatiquement si la connexion est perdue.
-
-    Payload : liste de { id, in_progress, last_sync, last_status,
-                          last_stats, next_run }
-    """
-
     async def generator():
-        jobs_cache: dict[str, str] = {}  # updated chaque 10 itérations pour éviter l'overhead
+        jobs_cache: dict[str, str] = {}
         iteration = 0
 
         while True:
-            # Mise à jour du cache des jobs toutes les 10 itérations (~20s)
             if iteration % 10 == 0:
                 jobs_cache = {j["id"]: j for j in _scheduler.list_jobs()}
             iteration += 1
@@ -381,6 +445,6 @@ async def api_sse():
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",   # désactive le buffer Nginx si présent
+            "X-Accel-Buffering": "no",
         },
     )

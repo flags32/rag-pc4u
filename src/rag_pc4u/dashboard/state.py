@@ -9,10 +9,10 @@ Schéma :
   {
     "mappings": {
       "<id>": {
-        "id", "remote_path", "collection_name", "interval_minutes",
+        "id", "remote_paths", "collection_name", "interval_minutes",
         "label", "created_at", "last_sync", "last_status",
         "last_stats": {"new", "modified", "deleted", "errors"},
-        "active"
+        "pending_files", "active"
       }
     },
     "sync_history": [
@@ -21,12 +21,20 @@ Schéma :
         "error_message" (optionnel) }
     ]   ← trié du plus récent au plus ancien, limité à 500 entrées
   }
+
+Changements v2 :
+  - remote_path (str)  →  remote_paths (list[str])  — point 2 : multi-chemins
+    Rétrocompatibilité : les anciens enregistrements avec "remote_path" str
+    sont normalisés automatiquement à la lecture (_normalize_mapping).
+  - Unicité du label par mapping actif  — point 1
+  - Unicité collection → mapping actif  — point 1 (une collection ne peut
+    appartenir qu'à un seul mapping actif à la fois)
+  - Recherche par label ou collection   — point 1
 """
 
 import json
 import threading
 import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -35,13 +43,10 @@ from rag_pc4u.core.tz_utils import now_paris_naive
 STATE_FILE = Path(__file__).parent / "mapping/dashboard_state.json"
 _lock = threading.Lock()
 
-# Création du dossier au chargement du module — garanti avant tout accès I/O.
-# parents=True : crée /app/src/rag_pc4u/dashboard/mapping/ en une seule fois.
-# exist_ok=True : silencieux si le dossier existe déjà (restart du conteneur).
 STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 
-# I/O
+# ── I/O ───────────────────────────────────────────────────────────────────────
 
 def _load() -> dict:
     if STATE_FILE.exists():
@@ -53,7 +58,6 @@ def _load() -> dict:
 
 
 def _save(state: dict) -> None:
-    # Sécurité supplémentaire : recrée le dossier s'il a été supprimé à chaud
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(
         json.dumps(state, indent=2, ensure_ascii=False, default=str),
@@ -61,50 +65,130 @@ def _save(state: dict) -> None:
     )
 
 
-# Mappings
+def _normalize_mapping(m: dict) -> dict:
+    """
+    Rétrocompatibilité : migre les anciens enregistrements qui utilisaient
+    encore remote_path (str) vers remote_paths (list[str]).
+    Non destructif — ne réécrit pas le JSON sur disque, opère uniquement
+    en mémoire pour ne pas créer de writes inutiles à chaque lecture.
+    """
+    if "remote_path" in m and "remote_paths" not in m:
+        m = dict(m)
+        m["remote_paths"] = [m.pop("remote_path")]
+    return m
+
+
+# ── Helpers de validation (point 1) ──────────────────────────────────────────
+
+def _label_exists(state: dict, label: str, exclude_id: Optional[str] = None) -> bool:
+    """Vérifie si un label est déjà utilisé par un mapping actif."""
+    for mid, m in state["mappings"].items():
+        if mid == exclude_id:
+            continue
+        if m.get("active") and m.get("label", "").strip().lower() == label.strip().lower():
+            return True
+    return False
+
+
+def _collection_used(state: dict, collection_name: str, exclude_id: Optional[str] = None) -> bool:
+    """
+    Vérifie si une collection est déjà associée à un mapping actif.
+    Une collection ne peut appartenir qu'à un seul mapping actif.
+    """
+    for mid, m in state["mappings"].items():
+        if mid == exclude_id:
+            continue
+        if m.get("active") and m.get("collection_name") == collection_name:
+            return True
+    return False
+
+
+# ── Mappings ──────────────────────────────────────────────────────────────────
 
 def get_mappings() -> dict:
-    """Retourne une copie du dict de mappings."""
+    """Retourne une copie du dict de mappings (normalisés)."""
     with _lock:
-        return dict(_load()["mappings"])
+        raw = _load()["mappings"]
+        return {mid: _normalize_mapping(m) for mid, m in raw.items()}
 
 
 def get_mapping(mapping_id: str) -> Optional[dict]:
     with _lock:
-        return _load()["mappings"].get(mapping_id)
+        m = _load()["mappings"].get(mapping_id)
+        return _normalize_mapping(m) if m else None
+
+
+def search_mappings(
+    label: Optional[str] = None,
+    collection_name: Optional[str] = None,
+) -> list[dict]:
+    """
+    Recherche de mappings par label (sous-chaîne, insensible à la casse)
+    ou par collection exacte. Les deux filtres sont cumulatifs (AND).
+
+    Point 1 du rapport : permettre la recherche d'un mapping par collection
+    Qdrant ou par libellé/nom.
+    """
+    with _lock:
+        mappings = _load()["mappings"]
+
+    results = []
+    for m in mappings.values():
+        m = _normalize_mapping(m)
+        if label and label.strip().lower() not in m.get("label", "").lower():
+            continue
+        if collection_name and m.get("collection_name") != collection_name:
+            continue
+        results.append(m)
+    return results
 
 
 def add_mapping(
-        remote_path: str,
+        remote_paths: list[str],
         collection_name: str,
         interval_minutes: int = 15,
         label: Optional[str] = None,
         start_at: Optional[str] = None,
-) -> dict:
+) -> dict | str:
     """
     Crée un nouveau mapping et le persiste.
 
-    Args:
-        start_at : Date/heure ISO de la 1ère sync planifiée (optionnel).
-
     Returns:
-        Le mapping créé avec son id généré.
+        Le mapping créé (dict), ou une string d'erreur si une contrainte
+        d'unicité est violée (label déjà utilisé, ou collection déjà liée
+        à un autre mapping actif).
+
+    Point 1 : unicité du label et de la collection par mapping actif.
+    Point 2 : remote_paths est une liste (dossiers ET/OU fichiers individuels).
     """
     with _lock:
         state = _load()
         mid = str(uuid.uuid4())[:8]
-        label = label or f"{remote_path.rstrip('/')}  →  {collection_name}"
+
+        # Label par défaut basé sur le premier chemin si non fourni
+        resolved_label = label or f"{remote_paths[0].rstrip('/')}  →  {collection_name}"
+
+        # ── Contrôles d'unicité (point 1) ────────────────────────────────────
+        if _label_exists(state, resolved_label):
+            return f"Un mapping actif utilise déjà le libellé « {resolved_label} »."
+        if _collection_used(state, collection_name):
+            return (
+                f"La collection « {collection_name} » est déjà associée à un "
+                f"mapping actif. Une collection ne peut appartenir qu'à un seul mapping."
+            )
+
         mapping = {
             "id": mid,
-            "remote_path": remote_path,
+            "remote_paths": remote_paths,     # list[str] — point 2
             "collection_name": collection_name,
             "interval_minutes": interval_minutes,
             "start_at": start_at,
-            "label": label,
+            "label": resolved_label,
             "created_at": now_paris_naive().isoformat(),
             "last_sync": None,
             "last_status": None,
             "last_stats": None,
+            "pending_files": [],
             "active": True,
         }
         state["mappings"][mid] = mapping
@@ -114,35 +198,48 @@ def add_mapping(
 
 def update_mapping(
         mapping_id: str,
-        remote_path: Optional[str] = None,
+        remote_paths: Optional[list[str]] = None,
         collection_name: Optional[str] = None,
         interval_minutes: Optional[int] = None,
         label: Optional[str] = None,
         start_at: Optional[str] = None,
-) -> Optional[dict]:
+) -> dict | str | None:
     """
-    Met à jour les champs fournis d'un mapping existant. Les champs non
-    fournis (None) restent inchangés. Retourne le mapping mis à jour, ou
-    None si le mapping n'existe pas.
+    Met à jour les champs fournis d'un mapping existant.
+    Retourne le mapping mis à jour, une string d'erreur si contrainte
+    d'unicité violée, ou None si le mapping n'existe pas.
     """
     with _lock:
         state = _load()
         if mapping_id not in state["mappings"]:
             return None
         m = state["mappings"][mapping_id]
-        if remote_path is not None:
-            m["remote_path"] = remote_path
+
+        target_label = label if label is not None else m.get("label")
+        target_collection = collection_name if collection_name is not None else m.get("collection_name")
+
+        # ── Contrôles d'unicité (point 1) ────────────────────────────────────
+        if label is not None and _label_exists(state, label, exclude_id=mapping_id):
+            return f"Un mapping actif utilise déjà le libellé « {label} »."
+        if collection_name is not None and _collection_used(state, collection_name, exclude_id=mapping_id):
+            return (
+                f"La collection « {collection_name} » est déjà associée à un "
+                f"mapping actif. Une collection ne peut appartenir qu'à un seul mapping."
+            )
+
+        if remote_paths is not None:
+            m["remote_paths"] = remote_paths
         if collection_name is not None:
             m["collection_name"] = collection_name
         if interval_minutes is not None:
             m["interval_minutes"] = interval_minutes
         if label is not None:
             m["label"] = label
-        # start_at est volontairement toujours réécrit (même à None) car
-        # l'utilisateur doit pouvoir EFFACER une date de départ déjà fixée.
+        # start_at toujours réécrit (même à None) pour permettre d'effacer
+        # une planification existante.
         m["start_at"] = start_at
         _save(state)
-        return m
+        return _normalize_mapping(m)
 
 
 def delete_mapping(mapping_id: str) -> bool:
@@ -172,15 +269,11 @@ def update_mapping_after_sync(mapping_id: str, sync_stats: dict) -> None:
             k: sync_stats.get(k, 0)
             for k in ("new", "modified", "deleted", "errors")
         }
-        # Fichiers dont les anciens chunks Qdrant ont été supprimés mais
-        # dont la réindexation n'a pas été confirmée (cf. run.py /
-        # IngestionPendingFilesError). Vide en fonctionnement normal —
-        # non vide signifie qu'il faut relancer une sync ou investiguer.
         m["pending_files"] = sync_stats.get("pending_files", [])
         _save(state)
 
 
-# Historique des syncs
+# ── Historique des syncs ──────────────────────────────────────────────────────
 
 def add_sync_record(mapping_id: str, stats: dict) -> None:
     """
@@ -204,13 +297,6 @@ def get_sync_history(
         limit: int = 50,
         mapping_id: Optional[str] = None,
 ) -> list:
-    """
-    Retourne l'historique des syncs, optionnellement filtré par mapping.
-
-    Args:
-        limit      : Nombre maximum d'entrées retournées.
-        mapping_id : Si fourni, filtre sur ce mapping uniquement.
-    """
     with _lock:
         state = _load()
         history = state["sync_history"]
@@ -220,10 +306,6 @@ def get_sync_history(
 
 
 def get_sync_counts_today() -> dict:
-    """
-    Retourne le nombre de syncs et d'erreurs pour aujourd'hui.
-    Utilisé par le dashboard pour les stats en temps réel.
-    """
     today = now_paris_naive().strftime("%Y-%m-%d")
     with _lock:
         state = _load()

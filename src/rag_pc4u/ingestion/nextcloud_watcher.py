@@ -31,7 +31,10 @@ logger = structlog.get_logger(__name__)
 
 DAV = "{DAV:}"
 
-ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf", ".csv", ""}
+ALLOWED_EXTENSIONS = {"", ".txt", ".md", ".pdf", ".csv",
+            ".docx", ".pptx", ".xlsx", ".html",
+            ".jpg", ".jpeg", ".png", ".tiff",
+            ".json", ".xml"}
 
 
 class NextcloudWatcher:
@@ -192,6 +195,33 @@ class NextcloudWatcher:
         )
         return files
 
+    def resolve_remote_path(self, remote_path: str) -> list[dict]:
+        """
+        Point 2 — Résout un chemin Nextcloud en liste de fichiers indexables,
+        que ce chemin pointe vers un DOSSIER ou un FICHIER INDIVIDUEL.
+
+        - Dossier  → liste tous les fichiers indexables (depth=1, non récursif).
+        - Fichier  → retourne ce fichier seul (extension non filtrée : un
+          fichier choisi explicitement par l'utilisateur est toujours inclus).
+
+        Lève FileNotFoundError si le chemin n'existe pas côté Nextcloud.
+        """
+        probe = self._propfind(remote_path, depth=0)
+        if not probe:
+            raise FileNotFoundError(f"Chemin Nextcloud introuvable : {remote_path}")
+
+        target = probe[0]
+        if target["is_dir"]:
+            return self.list_remote_files(remote_path)
+
+        return [{
+            "href": target["href"],
+            "name": Path(target["href"]).name,
+            "etag": target["etag"],
+            "modified": target["modified"],
+            "size": target["size"],
+        }]
+
     def list_remote_dirs(self, remote_path: str) -> list[dict]:
         """
         Liste les sous-dossiers d'un chemin pour le navigateur du dashboard.
@@ -267,24 +297,21 @@ class NextcloudWatcher:
 
     # Sync principale
 
-    def sync(self, remote_path: str, collection_name: str) -> dict:
+    def sync(self, remote_paths: list[str], collection_name: str) -> dict:
         """
-        Synchronise un dossier Nextcloud vers une collection RAG.
+        Point 2 — Synchronise une liste de chemins Nextcloud (dossiers ET/OU
+        fichiers individuels) vers une collection RAG en un seul cycle.
 
-        Protégé par un verrou par (remote_path, collection) pour empêcher
-        deux syncs simultanées sur le même mapping.
-
-        Returns:
-            dict de stats : new, modified, deleted, errors, status, ...
+        Protégé par un verrou par (remote_paths, collection).
         """
-        lock_key = f"{remote_path}::{collection_name}"
+        lock_key = f"{'|'.join(sorted(remote_paths))}::{collection_name}"
         with self._get_lock(lock_key):
-            return self._do_sync(remote_path, collection_name)
+            return self._do_sync(remote_paths, collection_name)
 
-    def _do_sync(self, remote_path: str, collection_name: str) -> dict:
+    def _do_sync(self, remote_paths: list[str], collection_name: str) -> dict:
         started_at = now_paris_naive()
         stats: dict = {
-            "remote_path": remote_path,
+            "remote_paths": remote_paths,
             "collection": collection_name,
             "new": 0,
             "modified": 0,
@@ -293,65 +320,71 @@ class NextcloudWatcher:
             "started_at": started_at.isoformat(),
             "finished_at": None,
             "status": "running",
-            # Fichiers temporairement invisibles du RAG : anciens chunks
-            # supprimés mais réindexation pas encore confirmée (cf.
-            # run_folder_ingestion). Vide en fonctionnement normal.
             "pending_files": [],
         }
 
         logger.info(
             "nextcloud.sync_start",
-            remote_path=remote_path,
+            remote_paths=remote_paths,
             collection=collection_name,
         )
 
-        # Cache local dédié à cette collection
+        # Cache local partagé par tous les chemins du mapping — un seul appel
+        # run_folder_ingestion à la fin pour ne pas fragmenter le cycle
+        # delete-puis-réindex entre plusieurs chemins d'un même mapping.
         local_dir = self.cache_base / collection_name
         local_dir.mkdir(parents=True, exist_ok=True)
 
-        # État précédent {href: etag}
-        previous_state = self._load_state(remote_path)
-        new_state: dict[str, str] = {}
+        had_list_error = False
 
-        # 1. Liste des fichiers distants
-        try:
-            remote_files = self.list_remote_files(remote_path)
-        except Exception as e:
-            logger.error("nextcloud.list_failed", error=str(e))
-            stats.update(status="error", error_message=str(e),
-                         finished_at=now_paris_naive().isoformat())
-            return stats
+        for remote_path in remote_paths:
+            previous_state = self._load_state(remote_path)
+            new_state: dict[str, str] = {}
 
-        current_hrefs = {f["href"] for f in remote_files}
+            # 1. Résolution du chemin (dossier OU fichier individuel — point 2)
+            try:
+                remote_files = self.resolve_remote_path(remote_path)
+            except Exception as e:
+                logger.error("nextcloud.list_failed", path=remote_path, error=str(e))
+                stats["errors"] += 1
+                had_list_error = True
+                # On continue avec les autres chemins du mapping plutôt que
+                # d'abandonner toute la sync à cause d'un seul chemin en erreur.
+                continue
 
-        # 2. Nouveaux / modifiés
-        for file_info in remote_files:
-            href = file_info["href"]
-            etag = file_info["etag"] or file_info["modified"]
-            new_state[href] = etag
-            local_path = local_dir / file_info["name"]
-            prev_etag = previous_state.get(href)
+            current_hrefs = {f["href"] for f in remote_files}
 
-            if prev_etag is None:
-                logger.info("nextcloud.new_file", href=href)
-                ok = self.download_file(href, local_path)
-                stats["new" if ok else "errors"] += 1
-            elif prev_etag != etag:
-                logger.info("nextcloud.modified_file", href=href)
-                ok = self.download_file(href, local_path)
-                stats["modified" if ok else "errors"] += 1
-            # sinon : inchangé → pas de téléchargement
+            # 2. Nouveaux / modifiés
+            for file_info in remote_files:
+                href = file_info["href"]
+                etag = file_info["etag"] or file_info["modified"]
+                new_state[href] = etag
+                local_path = local_dir / file_info["name"]
+                prev_etag = previous_state.get(href)
 
-        # 3. Fichiers supprimés distants → supprimer du cache local
-        for href in previous_state:
-            if href not in current_hrefs:
-                logger.info("nextcloud.deleted_file", href=href)
-                local_path = local_dir / Path(href).name
-                if local_path.exists():
-                    local_path.unlink()
-                stats["deleted"] += 1
+                if prev_etag is None:
+                    logger.info("nextcloud.new_file", href=href)
+                    ok = self.download_file(href, local_path)
+                    stats["new" if ok else "errors"] += 1
+                elif prev_etag != etag:
+                    logger.info("nextcloud.modified_file", href=href)
+                    ok = self.download_file(href, local_path)
+                    stats["modified" if ok else "errors"] += 1
 
-        # 4. Ingestion incrémentale si des changements ont eu lieu
+            # 3. Fichiers supprimés distants → supprimer du cache local
+            for href in previous_state:
+                if href not in current_hrefs:
+                    logger.info("nextcloud.deleted_file", href=href)
+                    local_path = local_dir / Path(href).name
+                    if local_path.exists():
+                        local_path.unlink()
+                    stats["deleted"] += 1
+
+            # État sauvegardé par chemin individuel — plus robuste si la liste
+            # de chemins d'un mapping change entre deux cycles.
+            self._save_state(remote_path, new_state)
+
+        # 4. Ingestion unique sur l'ensemble du cache fusionné
         if stats["new"] or stats["modified"] or stats["deleted"]:
             try:
                 ingestion_result = run_folder_ingestion(str(local_dir), collection_name)
@@ -371,15 +404,26 @@ class NextcloudWatcher:
                 return stats
             except Exception as e:
                 logger.error("nextcloud.ingestion_failed", error=str(e))
-                stats.update(status="error", error_message=str(e),
-                             finished_at=now_paris_naive().isoformat())
+                stats.update(
+                    status="error",
+                    error_message=str(e),
+                    finished_at=now_paris_naive().isoformat(),
+                )
                 return stats
         else:
             logger.info("nextcloud.no_changes", collection=collection_name)
 
-        # 5. Sauvegarde de l'état WebDAV
-        self._save_state(remote_path, new_state)
+        if had_list_error:
+            stats.update(
+                status="error",
+                error_message="Un ou plusieurs chemins Nextcloud du mapping sont inaccessibles.",
+                finished_at=now_paris_naive().isoformat(),
+            )
+            return stats
 
         stats.update(status="success", finished_at=now_paris_naive().isoformat())
-        logger.info("nextcloud.sync_done", **{k: v for k, v in stats.items() if k != "started_at"})
+        logger.info(
+            "nextcloud.sync_done",
+            **{k: v for k, v in stats.items() if k != "started_at"},
+        )
         return stats

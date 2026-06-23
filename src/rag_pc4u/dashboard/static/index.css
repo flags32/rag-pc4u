@@ -46,10 +46,10 @@
     ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: var(--text3); }
 
-    /* ── Layout ──────────────────────────────────────────────────────────── */
+    /* 0 Layout */
     .container { max-width: 1320px; margin: 0 auto; padding: 0 1.5rem; }
 
-    /* ── Header ──────────────────────────────────────────────────────────── */
+    /* Header */
     header {
       position: sticky; top: 0; z-index: 100;
       background: rgba(7,9,15,.92);
@@ -623,3 +623,120 @@
       margin: 1.25rem 0;
     }
     .page-bottom { height: 2rem; }
+    /*  Point 1 — Barre de recherche */
+    .search-bar {
+      position: relative;
+      margin-bottom: 1rem;
+    }
+    .search-icon {
+      position: absolute;
+      left: .75rem;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text3);
+      font-size: 1rem;
+      pointer-events: none;
+    }
+    .search-input {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: var(--font-b);
+      font-size: .84rem;
+      padding: .52rem .85rem .52rem 2.1rem;
+      transition: border-color .2s;
+    }
+    .search-input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-dim);
+    }
+    .search-input::placeholder { color: var(--text3); }
+
+    /* ── Point 2 — Multi-chemins */
+
+    /* Bouton "Ajouter ce chemin" sous le navigateur */
+    .browser-add-bar {
+      padding: .45rem .6rem;
+      border-top: 1px solid var(--border);
+      background: var(--bg2);
+    }
+
+    /* Fichiers individuels dans le navigateur */
+    .browser-file {
+      display: flex; align-items: center; gap: .55rem;
+      padding: .4rem .7rem;
+      border-radius: var(--radius);
+      cursor: pointer;
+      color: var(--text3);
+      font-size: .82rem;
+      transition: all .15s;
+    }
+    .browser-file:hover { background: var(--surface2); color: var(--text2); }
+    .browser-file-size {
+      margin-left: auto;
+      font-family: var(--font-m);
+      font-size: .67rem;
+      color: var(--text3);
+    }
+
+    /* Liste des chemins sélectionnés */
+    .sel-paths-empty {
+      font-size: .78rem;
+      color: var(--text3);
+      font-family: var(--font-m);
+      padding: .6rem .2rem;
+    }
+    .sel-path-tag {
+      display: flex; align-items: center; gap: .5rem;
+      background: var(--accent-dim);
+      border: 1px solid rgba(0,229,195,.2);
+      border-radius: var(--radius);
+      padding: .35rem .6rem;
+      margin-bottom: .35rem;
+      font-size: .78rem;
+      font-family: var(--font-m);
+    }
+    .sel-path-icon { flex-shrink: 0; }
+    .sel-path-text { color: var(--accent); flex: 1; word-break: break-all; }
+    .sel-path-remove {
+      background: none; border: none; cursor: pointer;
+      color: var(--text3); font-size: .8rem;
+      width: 20px; height: 20px;
+      border-radius: 3px;
+      display: grid; place-items: center;
+      transition: all .15s;
+      flex-shrink: 0;
+    }
+    .sel-path-remove:hover { background: var(--error-dim); color: var(--error); }
+
+    /* Affichage multi-chemins dans les cartes */
+    .card-path { margin-bottom: .6rem; }
+    .path-multi {
+      display: flex; flex-wrap: wrap; align-items: center; gap: .35rem;
+    }
+    .path-tag {
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 4px;
+      padding: .15rem .45rem;
+      font-family: var(--font-m);
+      font-size: .68rem;
+      color: var(--text2);
+    }
+    .path-arrow-multi {
+      color: var(--accent);
+      font-size: .9rem;
+      font-weight: 700;
+      margin: 0 .1rem;
+    }
+
+    /* Point 6 — Grille intervalle à 7 colonnes (ajout 7j) */
+    #int-grid {
+      grid-template-columns: repeat(7, 1fr);
+    }
+    @media (max-width: 480px) {
+      #int-grid { grid-template-columns: repeat(4, 1fr); }
+    }
