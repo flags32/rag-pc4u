@@ -1,4 +1,13 @@
 /* */
+const S = {
+  mappings:    [],
+  history:     [],
+  liveData:    {},
+  selPaths:    [],        // point 2 : liste de chemins sélectionnés
+  selInterval: 15,
+  editingId:   null,
+};
+
 async function init() {
   await Promise.all([loadStatus(), loadMappings(), loadHistory()]);
   startSSE();
@@ -151,7 +160,7 @@ function cardHTML(m) {
     </div>`;
 }
 
-/* ── SSE ─────────────────────────────────────────────────────────────────── */
+/* SSE */
 function startSSE() {
   const es = new EventSource('/api/events');
   es.onmessage = (e) => {

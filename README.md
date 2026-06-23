@@ -39,6 +39,10 @@ ollama pull qwen2.5:14b
 Si Docker n'est pas encore installé sur le LXC :
 
 ```bash
+apt update && apt install -y curl
+```
+```bash
+
 curl -fsSL https://get.docker.com | sh
 systemctl enable --now docker
 ```
