@@ -1,4 +1,4 @@
-/* */
+/* État client */
 const S = {
   mappings:    [],
   history:     [],
@@ -8,13 +8,14 @@ const S = {
   editingId:   null,
 };
 
+/*  Init  */
 async function init() {
   await Promise.all([loadStatus(), loadMappings(), loadHistory()]);
   startSSE();
   setInterval(() => { loadHistory(); }, 30_000);
 }
 
-/*  API helper */
+/*  API helper  */
 async function api(url, opts = {}) {
   const r = await fetch(url, {
     headers: { 'Content-Type': 'application/json' },
@@ -27,7 +28,7 @@ async function api(url, opts = {}) {
   return r.json();
 }
 
-/*  Status */
+/* Status  */
 async function loadStatus() {
   try {
     const d = await api('/api/status');
@@ -51,7 +52,7 @@ async function loadStatus() {
   }
 }
 
-/*  Mappings */
+/*  Mappings  */
 async function loadMappings() {
   try {
     const data = await api('/api/mappings');
@@ -153,6 +154,9 @@ function cardHTML(m) {
         <button class="btn btn-ghost btn-sm" onclick="openModal('${m.id}')">
           ✎ Modifier
         </button>
+        <button class="btn btn-warn btn-sm" onclick="deindexAll('${m.id}', '${esc(m.label)}')">
+          ⊘ Désindexer tout
+        </button>
         <button class="btn btn-danger btn-sm" onclick="delMapping('${m.id}', '${esc(m.label)}')">
           ✕ Supprimer
         </button>
@@ -201,7 +205,7 @@ function patchCard(u) {
   }
 }
 
-/* ── Actions ─────────────────────────────────────────────────────────────── */
+/*  Actions */
 async function triggerSync(id) {
   try {
     const r = await api(`/api/sync/${id}`, { method: 'POST' });
@@ -211,6 +215,21 @@ async function triggerSync(id) {
 }
 
 async function delMapping(id, label) {
+  // Vérification préalable : chunks encore indexés ?
+  try {
+    const info = await api(`/api/mappings/${id}/chunks`);
+    if (info.chunk_count > 0) {
+      toast(
+        `${info.chunk_count} chunk(s) encore indexé(s). Utilisez « Désindexer tout » avant de supprimer.`,
+        'error'
+      );
+      return;
+    }
+  } catch (e) {
+    // Si la vérification échoue on laisse quand même l'utilisateur essayer
+    // — le backend bloquera si nécessaire avec une erreur 409.
+  }
+
   if (!confirm(`Supprimer le mapping "${label}" ?\n\nLe cache local sera nettoyé automatiquement.`)) return;
   try {
     await api(`/api/mappings/${id}`, { method: 'DELETE' });
@@ -219,7 +238,42 @@ async function delMapping(id, label) {
   } catch (e) { toast(`Erreur : ${e.message}`, 'error'); }
 }
 
-/* ── Modal ───────────────────────────────────────────────────────────────── */
+async function deindexAll(id, label) {
+  if (!confirm(
+    `Désindexer tout le mapping "${label}" ?\n\n` +
+    `Tous les chunks Qdrant seront supprimés, la collection sera effacée, ` +
+    `et le mapping sera supprimé.\n\nCette action est irréversible.`
+  )) return;
+
+  try {
+    const r = await api(`/api/mappings/${id}/deindex`, { method: 'POST' });
+    if (r.status === 'started') {
+      toast('Désindexation en cours — le mapping sera supprimé automatiquement', 'success');
+      // On recharge après un court délai pour laisser le background task finir
+      setTimeout(loadMappings, 2500);
+    }
+  } catch (e) { toast(`Erreur : ${e.message}`, 'error'); }
+}
+
+/* Désindexation d'un fichier individuel depuis le modal d'édition.
+   local_path = chemin absolu dans le cache local du container.
+   Le cache est dans nextcloud_cache/<collection>/<filename>. */
+async function deindexFile(mappingId, localPath, displayName) {
+  if (!confirm(`Désindexer le fichier "${displayName}" ?\n\nSes chunks seront supprimés de Qdrant.`)) return;
+  try {
+    const r = await api(`/api/mappings/${mappingId}/deindex-file`, {
+      method: 'POST',
+      body: JSON.stringify({ local_path: localPath }),
+    });
+    toast(`${r.deindexed_chunks} chunk(s) supprimé(s) pour ${displayName}`, 'success');
+    // Retire visuellement le chemin de la liste des chemins sélectionnés
+    const idx = S.selPaths.findIndex(p => p === localPath || localPath.endsWith(p.split('/').pop()));
+    if (idx !== -1) { S.selPaths.splice(idx, 1); renderSelPaths(); }
+    loadMappings();
+  } catch (e) { toast(`Erreur : ${e.message}`, 'error'); }
+}
+
+/* Modal */
 async function openModal(mappingId = null) {
   S.editingId  = mappingId;
   S.selPaths   = [];
@@ -273,7 +327,7 @@ function closeModal() {
 }
 function overlayClick(e) { if (e.target.id === 'modal') closeModal(); }
 
-/* ── Gestion multi-chemins (point 2) ─────────────────────────────────────── */
+/* ── Gestion multi-chemins (point 2) */
 
 /* Ajoute le chemin actuellement affiché dans le navigateur à la liste */
 function addCurrentPath() {
@@ -297,7 +351,9 @@ function removeSelPath(idx) {
   renderSelPaths();
 }
 
-/* Affiche la liste des chemins sélectionnés sous le navigateur */
+/* Affiche la liste des chemins sélectionnés sous le navigateur.
+   En mode édition (S.editingId), chaque chemin a un bouton "Désindexer"
+   et le ✕ est bloqué tant que le fichier n'a pas été désindexé. */
 function renderSelPaths() {
   const el = document.getElementById('sel-paths-list');
   if (!el) return;
@@ -305,15 +361,44 @@ function renderSelPaths() {
     el.innerHTML = '<div class="sel-paths-empty">Aucun chemin sélectionné — naviguez et cliquez « + Ajouter »</div>';
     return;
   }
-  el.innerHTML = S.selPaths.map((p, i) => `
-    <div class="sel-path-tag">
-      <span class="sel-path-icon">📁</span>
-      <span class="sel-path-text">${esc(p)}</span>
-      <button class="sel-path-remove" onclick="removeSelPath(${i})" title="Retirer ce chemin">✕</button>
-    </div>`).join('');
+
+  const isEdit = !!S.editingId;
+  const mapping = isEdit ? S.mappings.find(x => x.id === S.editingId) : null;
+  const cacheBase = mapping ? `/api/cache/${mapping.collection_name}/` : null;
+
+  el.innerHTML = S.selPaths.map((p, i) => {
+    const fileName = p.split('/').pop();
+    /* En mode édition on construit le local_path pour l'API deindex-file.
+       Le cache local est nextcloud_cache/<collection>/<filename>. */
+    const localPath = isEdit && mapping
+      ? `nextcloud_cache/${mapping.collection_name}/${fileName}`
+      : null;
+
+    const deindexBtn = isEdit
+      ? `<button class="sel-path-deindex" title="Désindexer ce fichier"
+           onclick="deindexFile('${esc(S.editingId)}', '${esc(localPath || p)}', '${esc(fileName)}')">
+           ⊘ Désindexer
+         </button>`
+      : '';
+
+    /* ✕ : en mode édition, on prévient que la suppression du chemin
+       du mapping n'efface pas les chunks Qdrant — l'utilisateur doit
+       désindexer d'abord s'il veut retirer proprement. */
+    const removeTitle = isEdit
+      ? 'Retirer de la liste (sans désindexer les chunks Qdrant)'
+      : 'Retirer ce chemin';
+
+    return `
+      <div class="sel-path-tag">
+        <span class="sel-path-icon">📁</span>
+        <span class="sel-path-text">${esc(p)}</span>
+        ${deindexBtn}
+        <button class="sel-path-remove" onclick="removeSelPath(${i})" title="${removeTitle}">✕</button>
+      </div>`;
+  }).join('');
 }
 
-/* ── Navigateur Nextcloud ─────────────────────────────────────────────────── */
+/*  Navigateur Nextcloud */
 async function browse(path) {
   /* On ne met plus à jour S.selPaths ici — le navigateur est juste un
      outil de navigation. Le chemin devient sélectionné seulement via
@@ -371,7 +456,7 @@ function updateBreadcrumb(path) {
   bc.innerHTML = items.join('');
 }
 
-/* Création / Modification  */
+/* Création / Modification */
 async function createMapping() {
   const coll    = document.getElementById('f-coll').value.trim();
   const label   = document.getElementById('f-label').value.trim();
@@ -469,14 +554,14 @@ function updateHistFilter() {
     ).join('');
 }
 
-/* Intervalle (point 6 — hebdomadaire)  */
+/* Intervalle (point 6 — hebdomadaire) */
 function pickInt(btn) {
   S.selInterval = parseInt(btn.dataset.v);
   document.querySelectorAll('.int-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
 }
 
-/*  Stats */
+/* Stats  */
 function setStatVal(id, val) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -488,7 +573,7 @@ function setStatVal(id, val) {
   }
 }
 
-/*  Toasts  */
+/* Toasts */
 function toast(msg, type = 'info') {
   const z = document.getElementById('toast-zone');
   const t = document.createElement('div');
@@ -502,7 +587,7 @@ function toast(msg, type = 'info') {
   }, 3200);
 }
 
-/* ── Helpers ─────────────────────────────────────────────────────────────── */
+/* Helpers */
 function relAgo(iso) {
   if (!iso) return '—';
   const s = Math.round((Date.now() - new Date(iso)) / 1000);
@@ -545,5 +630,5 @@ function esc(s) {
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-/* ── Boot ────────────────────────────────────────────────────────────────── */
+/* Boot */
 document.addEventListener('DOMContentLoaded', init);

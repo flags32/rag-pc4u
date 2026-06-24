@@ -46,7 +46,7 @@
     ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: var(--text3); }
 
-    /* 0 Layout */
+    /* Layout */
     .container { max-width: 1320px; margin: 0 auto; padding: 0 1.5rem; }
 
     /* Header */
@@ -623,7 +623,7 @@
       margin: 1.25rem 0;
     }
     .page-bottom { height: 2rem; }
-    /*  Point 1 — Barre de recherche */
+    /* Point 1 — Barre de recherche */
     .search-bar {
       position: relative;
       margin-bottom: 1rem;
@@ -655,7 +655,7 @@
     }
     .search-input::placeholder { color: var(--text3); }
 
-    /* ── Point 2 — Multi-chemins */
+    /* Point 2 — Multi-chemins */
 
     /* Bouton "Ajouter ce chemin" sous le navigateur */
     .browser-add-bar {
@@ -739,4 +739,35 @@
     }
     @media (max-width: 480px) {
       #int-grid { grid-template-columns: repeat(4, 1fr); }
+    }
+
+    /* Désindexation */
+
+    /* Bouton "Désindexer tout" — orange/ambre pour distinguer du danger rouge */
+    .btn-warn {
+      background: transparent;
+      color: #f59e0b;
+      border: 1px solid rgba(245,158,11,.35);
+    }
+    .btn-warn:hover {
+      background: rgba(245,158,11,.12);
+      border-color: rgba(245,158,11,.6);
+    }
+
+    /* Bouton "Désindexer" par fichier dans la liste des chemins */
+    .sel-path-deindex {
+      background: none;
+      border: 1px solid rgba(245,158,11,.3);
+      cursor: pointer;
+      color: #f59e0b;
+      font-size: .68rem;
+      padding: .15rem .4rem;
+      border-radius: 3px;
+      transition: all .15s;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .sel-path-deindex:hover {
+      background: rgba(245,158,11,.15);
+      border-color: rgba(245,158,11,.6);
     }

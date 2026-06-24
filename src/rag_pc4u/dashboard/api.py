@@ -34,6 +34,7 @@ from rag_pc4u.core.tz_utils import now_paris_naive
 from rag_pc4u.dashboard import state as ds
 from rag_pc4u.dashboard.scheduler import SyncScheduler
 from rag_pc4u.ingestion.nextcloud_watcher import NextcloudWatcher
+from rag_pc4u.ingestion.run import deindex_file, deindex_collection, count_indexed_chunks
 
 logger = structlog.get_logger(__name__)
 
@@ -74,7 +75,7 @@ CURRENT_DIR = Path(__file__).resolve().parent
 app.mount("/static", StaticFiles(directory=CURRENT_DIR / "static"), name="static")
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# Helpers
 
 def _register_job(
     mapping_id: str,
@@ -199,7 +200,7 @@ def _cleanup_mapping_cache(mapping: dict) -> None:
                 )
 
 
-# ── Schémas Pydantic ──────────────────────────────────────────────────────────
+# Schémas Pydantic
 
 class MappingCreate(BaseModel):
     remote_paths: List[str] = Field(
@@ -227,7 +228,7 @@ class SyncResponse(BaseModel):
     mapping_id: Optional[str] = None
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
+# Endpoints
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def serve_dashboard():
@@ -340,8 +341,8 @@ async def api_update_mapping(mapping_id: str, body: MappingUpdate):
 @app.delete("/api/mappings/{mapping_id}", tags=["Mappings"])
 async def api_delete_mapping(mapping_id: str):
     """
-    Supprime un mapping, arrête son job scheduler, et nettoie le cache
-    Nextcloud local associé (point 8).
+    Supprime un mapping. Bloque si des chunks sont encore indexés dans Qdrant
+    — l'utilisateur doit d'abord passer par POST /api/mappings/{id}/deindex.
     """
     if _in_progress.get(mapping_id):
         raise HTTPException(409, "Une sync est en cours — attendez qu'elle se termine")
@@ -350,9 +351,16 @@ async def api_delete_mapping(mapping_id: str):
     if not mapping:
         raise HTTPException(404, "Mapping introuvable")
 
-    _scheduler.remove_job(mapping_id)
+    # Blocage si des données sont encore dans Qdrant
+    chunk_count = count_indexed_chunks(mapping["collection_name"])
+    if chunk_count > 0:
+        raise HTTPException(
+            409,
+            f"Ce mapping contient encore {chunk_count} chunk(s) indexé(s) dans Qdrant. "
+            f"Utilisez « Désindexer tout » avant de supprimer."
+        )
 
-    # Point 8 : nettoyage cache avant suppression de l'état
+    _scheduler.remove_job(mapping_id)
     _cleanup_mapping_cache(mapping)
 
     if not ds.delete_mapping(mapping_id):
@@ -360,6 +368,90 @@ async def api_delete_mapping(mapping_id: str):
 
     _in_progress.pop(mapping_id, None)
     return {"deleted": mapping_id}
+
+
+@app.post("/api/mappings/{mapping_id}/deindex", tags=["Désindexation"])
+async def api_deindex_all(mapping_id: str, bg: BackgroundTasks):
+    """
+    Workflow "Désindexer tout" :
+      1. Supprime tous les chunks Qdrant de la collection.
+      2. Supprime la collection Qdrant (drop physique).
+      3. Supprime le mapping du dashboard.
+      4. Nettoie le cache local.
+
+    Bloque si une sync est en cours sur ce mapping.
+    L'opération est lancée en arrière-plan pour ne pas bloquer la réponse
+    (peut prendre quelques secondes selon le volume de données).
+    """
+    if _in_progress.get(mapping_id):
+        raise HTTPException(409, "Une sync est en cours — attendez qu'elle se termine")
+
+    mapping = ds.get_mapping(mapping_id)
+    if not mapping:
+        raise HTTPException(404, "Mapping introuvable")
+
+    def _do_deindex():
+        try:
+            _in_progress[mapping_id] = True
+            deindex_collection(mapping["collection_name"])
+            _cleanup_mapping_cache(mapping)
+            _scheduler.remove_job(mapping_id)
+            ds.delete_mapping(mapping_id)
+            _in_progress.pop(mapping_id, None)
+            logger.info("dashboard.deindex_all_done", mapping_id=mapping_id)
+        except Exception as e:
+            _in_progress.pop(mapping_id, None)
+            logger.error("dashboard.deindex_all_failed", mapping_id=mapping_id, error=str(e))
+
+    bg.add_task(_do_deindex)
+    return {"status": "started", "mapping_id": mapping_id}
+
+
+@app.post("/api/mappings/{mapping_id}/deindex-file", tags=["Désindexation"])
+async def api_deindex_file(mapping_id: str, body: dict):
+    """
+    Désindexe un fichier individuel d'un mapping :
+      - Supprime ses chunks Qdrant (filtre meta.file_path).
+      - Supprime le fichier du cache local.
+      - Met à jour l'état d'ingestion local pour forcer la redétection
+        au prochain cycle si le fichier réapparaît côté Nextcloud.
+
+    Body JSON : { "local_path": "/chemin/absolu/dans/le/cache/local" }
+
+    Note : le chemin doit être le chemin absolu local (dans nextcloud_cache/),
+    pas le chemin distant Nextcloud. Le front construit ce chemin en combinant
+    la base du cache avec le nom de fichier.
+    """
+    if _in_progress.get(mapping_id):
+        raise HTTPException(409, "Une sync est en cours — attendez qu'elle se termine")
+
+    mapping = ds.get_mapping(mapping_id)
+    if not mapping:
+        raise HTTPException(404, "Mapping introuvable")
+
+    local_path = body.get("local_path", "").strip()
+    if not local_path:
+        raise HTTPException(400, "local_path manquant dans le body")
+
+    try:
+        count = deindex_file(local_path, mapping["collection_name"])
+        return {"deindexed_chunks": count, "local_path": local_path}
+    except Exception as e:
+        raise HTTPException(500, f"Erreur lors de la désindexation : {e}")
+
+
+@app.get("/api/mappings/{mapping_id}/chunks", tags=["Désindexation"])
+async def api_count_chunks(mapping_id: str):
+    """
+    Retourne le nombre de chunks indexés pour ce mapping dans Qdrant.
+    Utilisé par le front pour savoir si le bouton Supprimer doit être
+    bloqué ou non.
+    """
+    mapping = ds.get_mapping(mapping_id)
+    if not mapping:
+        raise HTTPException(404, "Mapping introuvable")
+    count = count_indexed_chunks(mapping["collection_name"])
+    return {"mapping_id": mapping_id, "chunk_count": count}
 
 
 # Sync manuelle

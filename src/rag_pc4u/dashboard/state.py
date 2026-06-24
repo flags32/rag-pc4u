@@ -46,7 +46,7 @@ _lock = threading.Lock()
 STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 
-# ── I/O ───────────────────────────────────────────────────────────────────────
+# I/O
 
 def _load() -> dict:
     if STATE_FILE.exists():
@@ -78,7 +78,7 @@ def _normalize_mapping(m: dict) -> dict:
     return m
 
 
-# ── Helpers de validation (point 1) ──────────────────────────────────────────
+# Helpers de validation (point 1)
 
 def _label_exists(state: dict, label: str, exclude_id: Optional[str] = None) -> bool:
     """Vérifie si un label est déjà utilisé par un mapping actif."""
@@ -103,7 +103,35 @@ def _collection_used(state: dict, collection_name: str, exclude_id: Optional[str
     return False
 
 
-# ── Mappings ──────────────────────────────────────────────────────────────────
+def _path_conflict(
+    state: dict,
+    remote_paths: list[str],
+    exclude_id: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Vérifie qu'aucun des chemins demandés n'est déjà utilisé par un autre
+    mapping actif. Un chemin physique Nextcloud ne peut appartenir qu'à un
+    seul mapping à la fois (contrainte métier : un fichier = un seul mapping).
+
+    Retourne une string d'erreur descriptive si conflit, None sinon.
+    """
+    for mid, m in state["mappings"].items():
+        if mid == exclude_id or not m.get("active"):
+            continue
+        existing_paths = set(
+            _normalize_mapping(m).get("remote_paths", [])
+        )
+        conflicts = set(remote_paths) & existing_paths
+        if conflicts:
+            conflict_list = ", ".join(f"« {p} »" for p in sorted(conflicts))
+            return (
+                f"Le(s) chemin(s) {conflict_list} "
+                f"sont déjà utilisés par le mapping « {m.get('label', mid)} »."
+            )
+    return None
+
+
+# Mappings
 
 def get_mappings() -> dict:
     """Retourne une copie du dict de mappings (normalisés)."""
@@ -168,7 +196,7 @@ def add_mapping(
         # Label par défaut basé sur le premier chemin si non fourni
         resolved_label = label or f"{remote_paths[0].rstrip('/')}  →  {collection_name}"
 
-        # ── Contrôles d'unicité (point 1) ────────────────────────────────────
+        # Contrôles d'unicité (point 1)
         if _label_exists(state, resolved_label):
             return f"Un mapping actif utilise déjà le libellé « {resolved_label} »."
         if _collection_used(state, collection_name):
@@ -176,6 +204,9 @@ def add_mapping(
                 f"La collection « {collection_name} » est déjà associée à un "
                 f"mapping actif. Une collection ne peut appartenir qu'à un seul mapping."
             )
+        path_err = _path_conflict(state, remote_paths)
+        if path_err:
+            return path_err
 
         mapping = {
             "id": mid,
@@ -218,7 +249,7 @@ def update_mapping(
         target_label = label if label is not None else m.get("label")
         target_collection = collection_name if collection_name is not None else m.get("collection_name")
 
-        # ── Contrôles d'unicité (point 1) ────────────────────────────────────
+        # Contrôles d'unicité (point 1)
         if label is not None and _label_exists(state, label, exclude_id=mapping_id):
             return f"Un mapping actif utilise déjà le libellé « {label} »."
         if collection_name is not None and _collection_used(state, collection_name, exclude_id=mapping_id):
@@ -226,6 +257,10 @@ def update_mapping(
                 f"La collection « {collection_name} » est déjà associée à un "
                 f"mapping actif. Une collection ne peut appartenir qu'à un seul mapping."
             )
+        if remote_paths is not None:
+            path_err = _path_conflict(state, remote_paths, exclude_id=mapping_id)
+            if path_err:
+                return path_err
 
         if remote_paths is not None:
             m["remote_paths"] = remote_paths
@@ -273,7 +308,7 @@ def update_mapping_after_sync(mapping_id: str, sync_stats: dict) -> None:
         _save(state)
 
 
-# ── Historique des syncs ──────────────────────────────────────────────────────
+# Historique des syncs
 
 def add_sync_record(mapping_id: str, stats: dict) -> None:
     """

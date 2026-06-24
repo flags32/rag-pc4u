@@ -80,6 +80,115 @@ def _delete_chunks_for_source(source_path: str, collection_name: str) -> int:
     return len(docs)
 
 
+def deindex_file(local_path: str, collection_name: str) -> int:
+    """
+    Désindexe un fichier individuel de Qdrant et met à jour l'état local.
+
+    - Supprime tous les chunks de ce fichier dans la collection Qdrant.
+    - Retire le fichier du cache local sur disque.
+    - Retire l'entrée de l'état d'ingestion (.ingestion_state_<collection>.json)
+      pour que le fichier soit retecté comme nouveau lors du prochain cycle
+      si jamais il réapparaît côté Nextcloud.
+
+    Args:
+        local_path      : Chemin absolu du fichier dans le cache local.
+        collection_name : Collection Qdrant cible.
+
+    Returns:
+        Nombre de chunks Qdrant supprimés.
+    """
+    count = _delete_chunks_for_source(local_path, collection_name)
+
+    # Suppression du fichier dans le cache local
+    p = Path(local_path)
+    if p.exists():
+        try:
+            p.unlink()
+            logger.info("deindex.local_file_removed", path=local_path)
+        except Exception as e:
+            logger.warning("deindex.local_file_removal_failed", path=local_path, error=str(e))
+
+    # Retrait de l'état d'ingestion pour forcer la redétection au prochain cycle
+    state = _load_state(collection_name)
+    if local_path in state:
+        state.pop(local_path)
+        _save_state(collection_name, state)
+        logger.info("deindex.state_entry_removed", path=local_path)
+
+    return count
+
+
+def deindex_collection(collection_name: str) -> int:
+    """
+    Désindexe TOUS les fichiers d'une collection et supprime la collection
+    Qdrant elle-même.
+
+    Utilisé par le workflow "Désindexer tout" du dashboard :
+      1. Supprime tous les documents de la collection Qdrant.
+      2. Supprime la collection Qdrant (drop physique).
+      3. Supprime le fichier d'état d'ingestion local.
+
+    Args:
+        collection_name : Collection Qdrant à vider et supprimer.
+
+    Returns:
+        Nombre de chunks supprimés.
+    """
+    ds = get_document_store(collection_name)
+
+    # Compte et supprime tous les documents de la collection
+    try:
+        all_docs = ds.filter_documents()
+        count = len(all_docs)
+        if all_docs:
+            ds.delete_documents(document_ids=[d.id for d in all_docs])
+            logger.info(
+                "deindex.collection_chunks_removed",
+                collection=collection_name,
+                count=count,
+            )
+    except Exception as e:
+        logger.error("deindex.collection_chunks_failed", collection=collection_name, error=str(e))
+        raise
+
+    # Suppression physique de la collection dans Qdrant
+    try:
+        ds.client.delete_collection(collection_name)
+        logger.info("deindex.collection_dropped", collection=collection_name)
+    except Exception as e:
+        logger.warning(
+            "deindex.collection_drop_failed",
+            collection=collection_name,
+            error=str(e),
+        )
+
+    # Suppression de l'état d'ingestion local
+    state_file = _state_file_for(collection_name)
+    if state_file.exists():
+        try:
+            state_file.unlink()
+            logger.info("deindex.state_file_removed", path=str(state_file))
+        except Exception as e:
+            logger.warning("deindex.state_file_removal_failed", error=str(e))
+
+    return count
+
+
+def count_indexed_chunks(collection_name: str) -> int:
+    """
+    Retourne le nombre de chunks actuellement indexés dans une collection.
+    Utilisé par api.py pour bloquer la suppression d'un mapping tant que
+    des données sont encore présentes dans Qdrant.
+    """
+    try:
+        ds = get_document_store(collection_name)
+        return len(ds.filter_documents())
+    except Exception:
+        # La collection n'existe pas encore ou Qdrant est inaccessible —
+        # on retourne 0 pour ne pas bloquer inutilement l'utilisateur.
+        return 0
+
+
 def _worker_job(file_path: Path, collection_name: str, date_added: str) -> int:
     """
     JOB ATOMIQUE DU WORKER : Construit son propre pipeline isolé
