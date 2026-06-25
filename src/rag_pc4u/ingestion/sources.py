@@ -18,10 +18,15 @@ class LocalDirectoryScanner:
 
     def __init__(self, allowed_extensions: List[str] = None):
         self.allowed_extensions = allowed_extensions or [
-            "", ".txt", ".md", ".pdf", ".csv",
-            ".docx", ".pptx", ".xlsx", ".html",
+            "", ".txt", ".md", ".pdf", ".csv", ".docx", ".pptx", ".xlsx", ".html",
+            # Images
             ".jpg", ".jpeg", ".png", ".tiff",
-            ".json", ".xml"
+            # Données structurées
+            ".json", ".xml",
+            # Audio
+            ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".wma", ".flac",
+            # Vidéo
+            ".mp4", ".mov"
         ]
 
     @component.output_types(paths=List[Path])

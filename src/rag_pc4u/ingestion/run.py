@@ -219,10 +219,15 @@ def run_folder_ingestion(folder_path: str, collection_name: str) -> Dict[str, An
 
     scanner = LocalDirectoryScanner(
         allowed_extensions=[
-            "", ".txt", ".md", ".pdf", ".csv",
-            ".docx", ".pptx", ".xlsx", ".html",
+            "", ".txt", ".md", ".pdf", ".csv", ".docx", ".pptx", ".xlsx", ".html",
+            # Images
             ".jpg", ".jpeg", ".png", ".tiff",
-            ".json", ".xml"
+            # Données structurées
+            ".json", ".xml",
+            # Audio
+            ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".wma", ".flac",
+            # Vidéo
+            ".mp4", ".mov"
         ]
     )
     current_files: list[Path] = scanner.run(directory_path=folder_path)["paths"]

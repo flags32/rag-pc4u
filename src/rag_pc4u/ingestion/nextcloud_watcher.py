@@ -31,10 +31,17 @@ logger = structlog.get_logger(__name__)
 
 DAV = "{DAV:}"
 
-ALLOWED_EXTENSIONS = {"", ".txt", ".md", ".pdf", ".csv",
-            ".docx", ".pptx", ".xlsx", ".html",
+ALLOWED_EXTENSIONS = {
+     "", ".txt", ".md", ".pdf", ".csv", ".docx", ".pptx", ".xlsx", ".html",
+            # Images
             ".jpg", ".jpeg", ".png", ".tiff",
-            ".json", ".xml"}
+            # Données structurées
+            ".json", ".xml",
+            # Audio
+            ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".wma", ".flac",
+            # Vidéo
+            ".mp4", ".mov"
+}
 
 
 class NextcloudWatcher:
