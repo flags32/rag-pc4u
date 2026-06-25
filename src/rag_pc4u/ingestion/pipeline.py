@@ -259,7 +259,10 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
     pipeline.add_component("structured_converter", StructuredDataToDocument())
 
     # ajout du composant pour les audio
-    pipeline.add_component("audio_converter",RemoteWhisperTranscriber())
+    pipeline.add_component(
+        "audio_converter",
+        RemoteWhisperTranscriber(api_base_url="http://rag-whisper:8000/v1")
+    )
     # ── Joiners ───────────────────────────────────────────────────────────────
     pipeline.add_component("joiner_txt", DocumentJoiner(join_mode="concatenate"))
     pipeline.add_component("joiner_main", DocumentJoiner(join_mode="concatenate"))

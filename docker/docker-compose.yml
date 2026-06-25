@@ -69,18 +69,16 @@ services:
     depends_on:
       - api
 
-# 3. Serveur Whisper optimisé pour le RAG
+  # 3. Serveur Whisper optimisé pour le RAG
   whisper:
-    image: fedirz/faster-whisper-server:latest
-    container_name: rag-whisper
-    ports:
-      - "8002:8002"
-    environment:
-      # --- OPTIMISATION CPU (Bridage pour ne pas gêner API/Dashboard) ---
-      - WHISPER_MODEL=large-v3
-      - WHISPER_CPU_THREADS=4
-      - WHISPER_NUM_WORKERS=1
-    volumes:
-      # Cache des modèles pour ne pas re-télécharger les 3 Go à chaque restart
-      - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/whisper:/root/.cache/whisper"
-    restart: unless-stopped
+      image: fedirz/faster-whisper-server:latest
+      container_name: rag-whisper
+      ports:
+        - "8002:8000"  # <-- CORRECTION : Écoute sur 8000 à l'intérieur, exposé sur 8002 à l'extérieur
+      environment:
+        - WHISPER_MODEL=large-v3
+        - WHISPER_CPU_THREADS=4
+        - WHISPER_NUM_WORKERS=1
+      volumes:
+        - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/whisper:/root/.cache/whisper"
+      restart: unless-stopped
