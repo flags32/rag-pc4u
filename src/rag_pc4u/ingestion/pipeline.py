@@ -327,11 +327,11 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
     pipeline.connect("router.audio/x-ms-wma", "audio_converter.sources")
     pipeline.connect("router.audio/flac", "audio_converter.sources")
 
-    pipeline.connect("video/mp4", "audio_converter.sources")
-    pipeline.connect("video/quicktime", "audio_converter.sources")
-    pipeline.connect("video/x-matroska", "audio_converter.sources")
-    pipeline.connect("video/x-msvideo", "audio_converter.sources")
-    pipeline.connect("video/webm", "audio_converter.sources")
+    pipeline.connect("router.video/mp4", "audio_converter.sources")
+    pipeline.connect("router.video/quicktime", "audio_converter.sources")
+    pipeline.connect("router.video/x-matroska", "audio_converter.sources")
+    pipeline.connect("router.video/x-msvideo", "audio_converter.sources")
+    pipeline.connect("router.video/webm", "audio_converter.sources")
 
     # 2. Collecte des formats textuels purs (qui doivent être découpés)
     pipeline.connect("txt_converter.documents", "joiner_txt.documents")
