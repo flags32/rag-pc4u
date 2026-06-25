@@ -27,7 +27,7 @@ class RemoteWhisperTranscriber:
             # CORRECTION : Modèle par défaut aligné sur ton serveur local
             model: str = "large-v3",
             # OPTIMISATION : URL par défaut pointant directement sur ton service Docker
-            api_base_url: str | None = "http://rag-whisper:8000/v1",
+            api_base_url: str | None = "http://rag-whisper:8002/v1",
             organization: str | None = None,
             http_client_kwargs: dict[str, Any] | None = None,
             **kwargs: Any,

@@ -32,7 +32,7 @@ from rag_pc4u.core.custom_components.csv_converter import CSVRowToDocument
 from rag_pc4u.core.custom_components.enricher import MetadataEnricher
 from rag_pc4u.core.custom_components.extensionless import ExtensionlessToDocument
 from rag_pc4u.core.custom_components.structured_converter import StructuredDataToDocument
-
+from rag_pc4u.core.custom_components.whisper_transcriber import RemoteWhisperTranscriber
 logger = logging.getLogger(__name__)
 
 # Chemin local du cache HuggingFace (cohérent avec docker-compose.yml)
@@ -223,7 +223,22 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
             "image/tiff",  # CORRECTION : Virgule ajoutée ici
             "application/json",
             "application/xml",
-            "text/xml"
+            "text/xml",
+            # --- EXTENSIONS AUDIO ---
+            "audio/mpeg",       # .mp3
+            "audio/wav",        # .wav
+            "audio/x-wav",      # .wav (variante MIME)
+            "audio/mp4",        # .m4a / .aac
+            "audio/ogg",        # .ogg / .opus
+            "audio/x-ms-wma",   # .wma
+            "audio/flac",       # .flac
+
+            # --- EXTENSIONS VIDÉO (Extraction Audio via Whisper/FFmpeg) ---
+            "video/mp4",        # .mp4
+            "video/quicktime",  # .mov
+            "video/x-matroska", # .mkv
+            "video/x-msvideo",  # .avi
+            "video/webm"        # .webm
         ]),
     )
     pipeline.add_component("docling_converter", _make_docling_converter())
@@ -239,9 +254,12 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
     pipeline.add_component("md_converter", TextFileToDocument(store_full_path=True))
     pipeline.add_component("extensionless_converter", ExtensionlessToDocument())
 
-    # Ajout du composant CSV
+    # Ajout du composant CSV et du JSON et XML
     pipeline.add_component("csv_converter", CSVRowToDocument())
     pipeline.add_component("structured_converter", StructuredDataToDocument())
+
+    # ajout du composant pour les audio
+    pipeline.add_component("audio_converter",RemoteWhisperTranscriber())
     # ── Joiners ───────────────────────────────────────────────────────────────
     pipeline.add_component("joiner_txt", DocumentJoiner(join_mode="concatenate"))
     pipeline.add_component("joiner_main", DocumentJoiner(join_mode="concatenate"))
@@ -278,11 +296,14 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
 
     # ── Câblage ───────────────────────────────────────────────────────────────
 
-    # 1. Routage vers les convertisseurs (ajout du CSV, de l'Office et des Images)
+    # 1. Routage vers les convertisseurs textuels, office et images
     pipeline.connect("router.application/pdf", "docling_converter.sources")
-    pipeline.connect("router.application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docling_converter.sources")
-    pipeline.connect("router.application/vnd.openxmlformats-officedocument.presentationml.presentation", "docling_converter.sources")
-    pipeline.connect("router.application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "docling_converter.sources")
+    pipeline.connect("router.application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                     "docling_converter.sources")
+    pipeline.connect("router.application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                     "docling_converter.sources")
+    pipeline.connect("router.application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                     "docling_converter.sources")
     pipeline.connect("router.text/html", "docling_converter.sources")
     pipeline.connect("router.image/jpeg", "docling_converter.sources")
     pipeline.connect("router.image/png", "docling_converter.sources")
@@ -297,6 +318,21 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
     pipeline.connect("router.application/xml", "structured_converter.sources")
     pipeline.connect("router.text/xml", "structured_converter.sources")
 
+    # 1b. ROUTAGE AUDIO & VIDÉO VERS TON COMPOSANT WHISPER DISTANT
+    pipeline.connect("router.audio/mpeg", "audio_converter.sources")
+    pipeline.connect("router.audio/wav", "audio_converter.sources")
+    pipeline.connect("router.audio/x-wav", "audio_converter.sources")
+    pipeline.connect("router.audio/mp4", "audio_converter.sources")
+    pipeline.connect("router.audio/ogg", "audio_converter.sources")
+    pipeline.connect("router.audio/x-ms-wma", "audio_converter.sources")
+    pipeline.connect("router.audio/flac", "audio_converter.sources")
+
+    pipeline.connect("video/mp4", "audio_converter.sources")
+    pipeline.connect("video/quicktime", "audio_converter.sources")
+    pipeline.connect("video/x-matroska", "audio_converter.sources")
+    pipeline.connect("video/x-msvideo", "audio_converter.sources")
+    pipeline.connect("video/webm", "audio_converter.sources")
+
     # 2. Collecte des formats textuels purs (qui doivent être découpés)
     pipeline.connect("txt_converter.documents", "joiner_txt.documents")
     pipeline.connect("md_converter.documents", "joiner_txt.documents")
@@ -307,13 +343,14 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
     pipeline.connect("joiner_txt.documents", "cleaner.documents")
     pipeline.connect("cleaner.documents", "splitter.documents")
 
-    # 4. Fusion finale : chunks PDF + chunks texte + chunks CSV
+    # 4. chunks PDF + chunks texte + chunks CSV + TRANSCRIPTIONS WHISPER
     pipeline.connect("docling_converter.documents", "joiner_main.documents")
     pipeline.connect("splitter.documents", "joiner_main.documents")
 
     pipeline.connect("csv_converter.documents", "joiner_main.documents")
     pipeline.connect("structured_converter.documents", "joiner_main.documents")
 
+    pipeline.connect("audio_converter.documents", "joiner_main.documents")
     # 5. Enrichissement → embeddings → stockage
     pipeline.connect("joiner_main.documents", "enricher.documents")
     pipeline.connect("enricher.documents", "dense_embedder.documents")
