@@ -187,7 +187,7 @@ def _make_docling_converter() -> PatchedDoclingConverter:
             # On passe l'objet tokenizer directement — Docling ne touche pas
             # à HuggingFace Hub, aucune requête réseau possible.
             tokenizer=_get_bge_tokenizer(),
-            max_tokens=settings.chunk_size,
+            max_tokens= 384,
         ),
     )
 
@@ -346,6 +346,7 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
     pipeline.connect("txt_converter.documents", "joiner_txt.documents")
     pipeline.connect("md_converter.documents", "joiner_txt.documents")
     pipeline.connect("extensionless_converter.documents", "joiner_txt.documents")
+    pipeline.connect("audio_converter.documents", "joiner_txt.documents")
 
 
     # 3. Nettoyage et découpage de la branche texte
@@ -359,7 +360,7 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
     pipeline.connect("csv_converter.documents", "joiner_main.documents")
     pipeline.connect("structured_converter.documents", "joiner_main.documents")
 
-    pipeline.connect("audio_converter.documents", "joiner_main.documents")
+
     # 5. Enrichissement → embeddings → stockage
     pipeline.connect("joiner_main.documents", "enricher.documents")
     pipeline.connect("enricher.documents", "dense_embedder.documents")

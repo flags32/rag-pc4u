@@ -33,8 +33,8 @@ class Settings(BaseSettings):
 
     # RAG
     top_k: int = 35
-    chunk_size: int = 384
-    chunk_overlap: int = 40
+    chunk_size: int = 548
+    chunk_overlap: int = 60
 
     # API
     api_host: str = "0.0.0.0"
