@@ -259,9 +259,15 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
     pipeline.add_component("structured_converter", StructuredDataToDocument())
 
     # ajout du composant pour les audio
+    # timeout_seconds=7200 : large-v3 sur CPU peut prendre jusqu'à 2h pour un long audio.
+    # max_retries=0 (dans whisper_transcriber.py) : on ne veut PAS que le client OpenAI
+    # envoie une 2ème requête pendant que Whisper traite encore la 1ère.
     pipeline.add_component(
         "audio_converter",
-        RemoteWhisperTranscriber(api_base_url="http://rag-whisper:8000/v1")
+        RemoteWhisperTranscriber(
+            api_base_url="http://rag-whisper:8000/v1",
+            timeout_seconds=7_200,  # 2 heures — ajuster selon la durée max attendue
+        )
     )
     # ── Joiners ───────────────────────────────────────────────────────────────
     pipeline.add_component("joiner_txt", DocumentJoiner(join_mode="concatenate"))
