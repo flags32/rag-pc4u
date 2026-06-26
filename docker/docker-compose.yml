@@ -77,7 +77,7 @@ services:
         - "8002:8000"  # <-- CORRECTION : Écoute sur 8000 à l'intérieur, exposé sur 8002 à l'extérieur
       environment:
         - WHISPER_MODEL=large-v3
-        - WHISPER_COMPUTE_TYPE=int8
+        - WHISPER_COMPUTE_TYPE=int8_float32
         - WHISPER_CPU_THREADS=8
         - WHISPER_NUM_WORKERS=1
       volumes:
