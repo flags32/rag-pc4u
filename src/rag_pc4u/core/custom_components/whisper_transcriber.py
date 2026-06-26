@@ -26,7 +26,7 @@ logger = structlog.get_logger(__name__)
 
 # Constantes
 
-_DEFAULT_TIMEOUT_SECONDS = 7_200.0  # 2 heures
+_DEFAULT_TIMEOUT_SECONDS = 86_400.0  # 1jours
 
 # Débit oral moyen du français : ~135 mots/minute.
 # 200 mots ≈ 1m30 de parole → chunk sémantiquement cohérent pour réunion/tuto.
