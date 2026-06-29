@@ -1,0 +1,59 @@
+{
+  "mappings": {},
+  "sync_history": [
+    {
+      "id": "6ddb627d",
+      "mapping_id": "2bd20ba7",
+      "timestamp": "2026-06-29T09:33:39.090300",
+      "remote_paths": [
+        "/Documents/echec"
+      ],
+      "collection": "dsfdsfdsfdsfsdqsdds",
+      "new": 1,
+      "modified": 0,
+      "deleted": 0,
+      "errors": 0,
+      "started_at": "2026-06-29T09:33:38.856124",
+      "finished_at": "2026-06-29T09:33:39.089337",
+      "status": "error",
+      "pending_files": [
+        "/home/user/Documents/projet_rag/rag-apiV1/src/rag_pc4u/ingestion/nextcloud_cache/dsfdsfdsfdsfsdqsdds/test.txt"
+      ],
+      "error_message": "1 fichier(s) n'ont pas pu être indexés."
+    },
+    {
+      "id": "7db45971",
+      "mapping_id": "c94675ff",
+      "timestamp": "2026-06-24T13:03:50.460076",
+      "remote_paths": [
+        "/Nextcloud%20Manual.pdf",
+        "/Nextcloud.png"
+      ],
+      "collection": "bdffdgfd",
+      "new": 2,
+      "modified": 0,
+      "deleted": 0,
+      "errors": 0,
+      "started_at": "2026-06-24T13:03:48.713790",
+      "finished_at": "2026-06-24T13:03:50.459214",
+      "status": "error",
+      "pending_files": [
+        "/home/user/Documents/projet_rag/rag-apiV1/src/rag_pc4u/ingestion/nextcloud_cache/bdffdgfd/Nextcloud.png",
+        "/home/user/Documents/projet_rag/rag-apiV1/src/rag_pc4u/ingestion/nextcloud_cache/bdffdgfd/Nextcloud%20Manual.pdf"
+      ],
+      "error_message": "2 fichier(s) n'ont pas pu être indexés."
+    },
+    {
+      "id": "d881a2f3",
+      "mapping_id": "c94675ff",
+      "timestamp": "2026-06-24T11:40:34.788167",
+      "status": "error",
+      "error_message": "[Errno 2] No such file or directory: '/home/user/Documents/projet_rag/rag-apiV1/src/rag_pc4u/ingestion/fichier_injecter/.nextcloud_etag_Nextcloud%20Manual.pdf.json'",
+      "finished_at": "2026-06-24T11:40:34.787099",
+      "new": 0,
+      "modified": 0,
+      "deleted": 0,
+      "errors": 1
+    }
+  ]
+}
