@@ -346,7 +346,7 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
     pipeline.connect("txt_converter.documents", "joiner_txt.documents")
     pipeline.connect("md_converter.documents", "joiner_txt.documents")
     pipeline.connect("extensionless_converter.documents", "joiner_txt.documents")
-    pipeline.connect("audio_converter.documents", "joiner_txt.documents")
+
 
 
     # 3. Nettoyage et découpage de la branche texte
@@ -359,7 +359,7 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
 
     pipeline.connect("csv_converter.documents", "joiner_main.documents")
     pipeline.connect("structured_converter.documents", "joiner_main.documents")
-
+    pipeline.connect("audio_converter.documents", "joiner_main.documents")
 
     # 5. Enrichissement → embeddings → stockage
     pipeline.connect("joiner_main.documents", "enricher.documents")

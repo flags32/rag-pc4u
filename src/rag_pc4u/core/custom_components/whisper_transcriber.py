@@ -2,12 +2,13 @@
 Composant Haystack custom pour la transcription audio via un serveur Whisper distant.
 
 FIXES appliqués :
-  1. Timeout httpx explicite (défaut 7200s = 2h) — évite les retries prématurés
+  1. Timeout httpx explicite (défaut 86400s = 1j) — évite les retries prématurés
      du client OpenAI qui causaient une cascade de requêtes en parallèle.
   2. max_retries=0 — les retries sont délégués à run.py (IngestionPendingFilesError).
-  3. Split interne adapté à la parole (audio_chunk_words / audio_chunk_overlap) —
-     le transcript brut est découpé en chunks de ~1m30 de parole avant d'être
-     envoyé dans le pipeline, avec respect des frontières de phrases.
+  3. Split basé sur les segments Whisper (verbose_json) plutôt que sur le texte brut —
+     chaque chunk regroupe des segments consécutifs jusqu'à audio_chunk_words mots,
+     avec un overlap de audio_chunk_overlap mots sur le chunk suivant.
+     Les timestamps start/end de chaque chunk sont conservés dans les métadonnées.
      → Connecter audio_converter.documents vers joiner_txt.documents dans pipeline.py.
 """
 
@@ -39,8 +40,7 @@ _AUDIO_VIDEO_EXTENSIONS = {
     ".mp4", ".mov", ".mkv", ".avi", ".webm",
 }
 
-# Marqueurs de fin de phrase reconnus dans les transcriptions Whisper
-_SENTENCE_ENDINGS = {".", "!", "?", "...", "»", '"', "?»", "!»"}
+
 
 
 
@@ -53,94 +53,96 @@ def _resolve_mime(path: Path) -> str:
     return mime or "application/octet-stream"
 
 
-def _split_transcript(
-    text: str,
+def _split_segments(
+    segments: List[dict],
     chunk_words: int,
     overlap_words: int,
     base_meta: dict,
 ) -> List[Document]:
     """
-    Découpe un transcript en chunks adaptés à la parole.
+    Regroupe les segments Whisper (verbose_json) en chunks adaptés à la parole.
 
     Stratégie :
-      - Découpage par mots avec fenêtre glissante.
-      - Dans la zone [80 %, 100 %] de chaque fenêtre, on cherche la dernière
-        frontière de phrase (., !, ?, ...) pour ne pas couper en plein milieu
-        d'une idée. Si aucune frontière n'est trouvée, on coupe à chunk_words.
-      - Chevauchement de `overlap_words` mots entre chunks consécutifs pour
-        préserver le contexte aux jointures.
-      - Si le texte est plus court que chunk_words, un seul Document est produit.
+      - On accumule des segments consécutifs jusqu'à atteindre chunk_words mots.
+        Chaque segment est déjà une unité sémantique naturelle produite par Whisper
+        (frontière de phrase respectée), donc on ne coupe jamais en plein milieu
+        d'une idée — contrairement à un split naïf par mots sur le texte brut.
+      - Les timestamps start/end du premier et dernier segment du chunk sont
+        conservés dans les métadonnées → permet de retrouver la minute exacte
+        dans l'audio source lors d'une recherche RAG.
+      - Overlap : les `overlap_words` derniers mots du chunk N sont réinjectés
+        en tête du chunk N+1 sous forme de texte (pas de segments entiers),
+        pour préserver le contexte aux jointures sans dupliquer les timestamps.
+      - Si le transcript complet est plus court que chunk_words, un seul
+        Document est produit.
 
     Args:
-        text         : Transcript brut retourné par Whisper.
+        segments     : Liste de segments Whisper (champs attendus : "text",
+                       "start", "end"). Retournés par verbose_json.
         chunk_words  : Taille cible d'un chunk en mots.
-        overlap_words: Mots partagés entre deux chunks consécutifs.
-        base_meta    : Métadonnées communes injectées dans chaque Document produit.
+                       Débit oral français ~135 mots/min → 200 mots ≈ 1m30.
+        overlap_words: Mots de chevauchement entre chunks consécutifs.
+                       30 mots ≈ 15s de chevauchement.
+        base_meta    : Métadonnées communes injectées dans chaque Document.
 
     Returns:
         Liste de Documents Haystack prêts pour le pipeline.
     """
-    text = text.strip()
-    if not text:
+    if not segments:
         return []
 
-    words = text.split()
+    documents: List[Document] = []
+    current_segments: List[dict] = []
+    current_word_count = 0
+    overlap_prefix = ""  # texte d'overlap issu du chunk précédent
 
-    # Texte court : un seul Document, pas de découpage nécessaire
-    if len(words) <= chunk_words:
-        return [
+    def _flush(segs: List[dict], prefix: str, chunk_idx: int) -> str:
+        """Construit un Document à partir des segments accumulés, retourne le texte d'overlap."""
+        text = (prefix + " " + " ".join(s["text"].strip() for s in segs)).strip()
+        documents.append(
             Document(
                 content=text,
-                meta={**base_meta, "chunk_index": 0, "total_chunks": 1},
+                meta={
+                    **base_meta,
+                    "chunk_index": chunk_idx,
+                    # Timestamps : début du 1er segment, fin du dernier
+                    "start_time": segs[0]["start"],
+                    "end_time": segs[-1]["end"],
+                },
             )
-        ]
+        )
+        # Calcul de l'overlap : on prend les overlap_words derniers mots du texte produit
+        words = text.split()
+        return " ".join(words[-overlap_words:]) if len(words) > overlap_words else ""
 
-    chunks_text: List[str] = []
-    start = 0
+    for seg in segments:
+        seg_words = len(seg["text"].split())
+        current_segments.append(seg)
+        current_word_count += seg_words
 
-    while start < len(words):
-        end = min(start + chunk_words, len(words))
-        chunk_slice = words[start:end]
+        if current_word_count >= chunk_words:
+            overlap_prefix = _flush(current_segments, overlap_prefix, len(documents))
+            current_segments = []
+            current_word_count = 0
 
-        # Ajustement sur frontière de phrase si on n'est pas à la fin du texte
-        if end < len(words):
-            search_from = max(start + int(chunk_words * 0.8), start + 1)
-            last_boundary: Optional[int] = None
+    # Flush du dernier chunk (peut être plus court que chunk_words)
+    if current_segments:
+        _flush(current_segments, overlap_prefix, len(documents))
 
-            for i in range(end - 1, search_from - 1, -1):
-                token = words[i].rstrip()
-                if any(token.endswith(marker) for marker in _SENTENCE_ENDINGS):
-                    last_boundary = i + 1
-                    break
-
-            if last_boundary is not None:
-                chunk_slice = words[start:last_boundary]
-                end = last_boundary
-
-        chunks_text.append(" ".join(chunk_slice))
-
-        # Prochain chunk : recule de `overlap_words` pour le chevauchement
-        next_start = end - overlap_words
-        if next_start <= start:
-            next_start = start + 1  # sécurité anti-boucle infinie
-        start = next_start
-
-    total = len(chunks_text)
+    total = len(documents)
     logger.info(
         "whisper.split_done",
-        total_words=len(words),
+        total_segments=len(segments),
         chunks_produced=total,
         chunk_words=chunk_words,
         overlap_words=overlap_words,
     )
 
-    return [
-        Document(
-            content=chunk_text,
-            meta={**base_meta, "chunk_index": i, "total_chunks": total},
-        )
-        for i, chunk_text in enumerate(chunks_text)
-    ]
+    # Injection du total dans les métadonnées maintenant qu'on le connaît
+    for doc in documents:
+        doc.meta["total_chunks"] = total
+
+    return documents
 
 
 
@@ -152,8 +154,14 @@ class RemoteWhisperTranscriber:
     """
     Composant Haystack qui envoie des fichiers audio/vidéo à un serveur
     Whisper distant (compatible OpenAI /v1/audio/transcriptions), transcrit
-    le contenu, puis le découpe en chunks adaptés à la parole avant de
-    retourner des Documents Haystack.
+    le contenu, puis le découpe en chunks basés sur les segments Whisper
+    avant de retourner des Documents Haystack.
+
+    Le chunking utilise verbose_json pour récupérer les segments natifs de
+    Whisper (frontières de phrases déjà respectées) plutôt que de découper
+    le texte brut par mots. Chaque chunk conserve les timestamps start/end
+    dans ses métadonnées, ce qui permet de retrouver la minute exacte dans
+    l'audio source lors d'une recherche RAG.
 
     Conçu pour être connecté à joiner_txt.documents dans le pipeline
     (les chunks passent ensuite par cleaner → splitter → joiner_main).
@@ -169,7 +177,7 @@ class RemoteWhisperTranscriber:
         language           : Code BCP-47 pour forcer la langue (ex : "fr").
                              Si None, Whisper détecte automatiquement.
         timeout_seconds    : Timeout HTTP pour la phase de lecture (= durée max
-                             de transcription tolérée). Défaut : 7 200 s (2h).
+                             de transcription tolérée). Défaut : 86 400 s (1j).
         audio_chunk_words  : Taille cible d'un chunk en mots.
                              Défaut : 200 mots ≈ 1m30 de parole française.
                              Doit rester inférieur au chunk_size du pipeline.
@@ -290,38 +298,43 @@ class RemoteWhisperTranscriber:
             audio_chunk_words=self.audio_chunk_words,
         )
 
-        # Appel API Whisper
+        # Appel API Whisper — verbose_json pour récupérer les segments natifs
+        # avec leurs timestamps (start/end par phrase).
         with open(abs_path_str, "rb") as audio_file:
             kwargs = dict(
                 model=self.model,
                 file=(file_path.name, audio_file, _resolve_mime(file_path)),
-                response_format="text",
+                response_format="verbose_json",
             )
             if self.language:
                 kwargs["language"] = self.language
 
-            transcript: str = client.audio.transcriptions.create(**kwargs)
+            response = client.audio.transcriptions.create(**kwargs)
 
-        if not transcript or not transcript.strip():
+        segments = response.segments or []
+        full_text = response.text or ""
+
+        if not full_text.strip():
             logger.warning("whisper.empty_transcript", path=abs_path_str)
             return []
 
         logger.info(
             "whisper.transcription_done",
             path=abs_path_str,
-            chars=len(transcript),
-            words=len(transcript.split()),
+            chars=len(full_text),
+            words=len(full_text.split()),
+            segments=len(segments),
         )
 
-        # Découpage en chunks adaptés à la parole
+        # Découpage en chunks basés sur les segments Whisper
         base_meta = {
             "file_path": abs_path_str,
             "file_name": file_path.name,
             "source_type": "audio_transcript",
         }
 
-        return _split_transcript(
-            text=transcript,
+        return _split_segments(
+            segments=segments,
             chunk_words=self.audio_chunk_words,
             overlap_words=self.audio_chunk_overlap,
             base_meta=base_meta,
