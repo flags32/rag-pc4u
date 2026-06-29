@@ -266,7 +266,7 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
         "audio_converter",
         RemoteWhisperTranscriber(
             api_base_url="http://rag-whisper:8000/v1",
-            timeout_seconds=7_200,  # 2 heures — ajuster selon la durée max attendue
+            timeout_seconds=86_400,  # 1jours — ajuster selon la durée max attendue
         )
     )
     # ── Joiners ───────────────────────────────────────────────────────────────
