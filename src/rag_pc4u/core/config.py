@@ -1,4 +1,16 @@
+# config.py
+import os
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+_LOCAL_MODELS_DIR = Path(__file__).parent.parent.parent / "models_cache"
+_LOCAL_MODELS_DIR.mkdir(exist_ok=True)
+
+os.environ.setdefault("HF_HOME", str(_LOCAL_MODELS_DIR / "hf_cache"))
+os.environ.setdefault("FASTEMBED_CACHE_PATH", str(_LOCAL_MODELS_DIR / "fastembed_cache"))
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 
 class Settings(BaseSettings):
@@ -14,21 +26,21 @@ class Settings(BaseSettings):
     ollama_embed_model: str = "bge-m3:latest"
     ollama_llm_model: str = "qwen2.5:14b-instruct-q8_0"
 
-    # Qdrant — pointe vers le LXC Proxmox
+    # Qdrant
     qdrant_host: str = "192.168.204.20"
     qdrant_port: int = 6333
-    embedding_dim: int = 1024  # dimension de bge-m3
+    embedding_dim: int = 1024
 
     # RAG
-    top_k: int = 35      # chunks remontés par le retriever
-    chunk_size: int = 384
-    chunk_overlap: int = 40
+    top_k: int = 35
+    chunk_size: int = 548
+    chunk_overlap: int = 60
 
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
-    List_collection: list[str] = [] #on va faire une commande pour recuperer la liste des collections qdrant
+    List_collection: list[str] = []
     default_collection: str = "documents_machine"
 
     # SMB
@@ -38,12 +50,11 @@ class Settings(BaseSettings):
     smb_password: str = ""
 
     # Nextcloud / WebDAV
-    nextcloud_url: str = ""
-    nextcloud_user: str = ""
-    nextcloud_password: str = ""
+    nextcloud_url: str = "192.168.204.24"
+    nextcloud_user: str = "root"
+    nextcloud_password: str = "admin123"
     nextcloud_remote_path: str = "/documents"
 
-    # Logs
     log_level: str = "INFO"
 
     @property

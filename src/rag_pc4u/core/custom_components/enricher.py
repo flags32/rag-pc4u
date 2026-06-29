@@ -1,16 +1,22 @@
 """Composant Haystack custom : enrichissement des métadonnées avant indexation."""
+import logging
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
 from haystack import component, Document
 
+from rag_pc4u.core.tz_utils import now_paris_naive
+
+logger = logging.getLogger(__name__)
+
 @component
 class MetadataEnricher:
     @component.output_types(documents=List[Document])
     def run(self, documents: List[Document], date_added: Optional[str] = None) -> dict:
         if not date_added:
-            date_added = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            date_added = now_paris_naive().strftime("%Y-%m-%d %H:%M:%S")
 
         enriched = []
         for doc in documents:
@@ -21,10 +27,10 @@ class MetadataEnricher:
             raw_path = (
                 doc.meta.get("file_path")
                 or doc.meta.get("source")
-                or doc.meta.get("origin", {}).get("filename")
-                or doc.meta.get("origin", {}).get("uri")
-                or doc.meta.get("dl_meta", {}).get("origin", {}).get("uri")
-                or doc.meta.get("dl_meta", {}).get("origin", {}).get("filename")
+                or (doc.meta.get("origin") or {}).get("filename")
+                or (doc.meta.get("origin") or {}).get("uri")
+                or (doc.meta.get("dl_meta") or {}).get("origin", {}).get("uri")
+                or (doc.meta.get("dl_meta") or {}).get("origin", {}).get("filename")
                 or ""
             )
             file_path = str(raw_path)
@@ -35,6 +41,14 @@ class MetadataEnricher:
 
             # 3. Récupération du nom du fichier seul
             file_name = Path(file_path).name if file_path else "inconnu"
+
+            if not file_path:
+                warnings.warn(
+                    f"MetadataEnricher: aucun chemin trouvé pour doc.id={doc.id}. "
+                    f"meta reçu = {doc.meta!r}",
+                    stacklevel=2,
+                )
+                logger.debug("MetadataEnricher — meta complet:\n%s", _pretty_meta(doc.meta))
 
             new_meta = {
                 **doc.meta,
@@ -54,3 +68,11 @@ class MetadataEnricher:
 
     def __repr__(self):
         return "MetadataEnricher()"
+
+
+def _pretty_meta(meta: dict) -> str:
+    """Sérialisation lisible du meta pour les logs, sans crasher sur les types inconnus."""
+    lines = []
+    for k, v in meta.items():
+        lines.append(f"  {k!r}: {v!r}")
+    return "\n".join(lines) if lines else "  (vide)"

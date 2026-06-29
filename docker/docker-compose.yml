@@ -1,4 +1,5 @@
 services:
+  # 1. API principale (Interface de Chat / Haystack)
   api:
     build:
       context: ..
@@ -9,11 +10,76 @@ services:
     env_file:
       - ../.env
     environment:
-      # On injecte les IPs de tes LXC Proxmox pour surcharger proprement la configuration
+      TZ: "Europe/Paris"
+      # --- BRIDAGE CPU (Prévention du Thread Thrashing) ---
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      OPENBLAS_NUM_THREADS: "4"
+      # ----------------------------------------------------
+      HF_HUB_OFFLINE: "1"
+      HF_HOME: "/root/.cache/hf_cache"
+      FASTEMBED_CACHE_PATH: "/root/.cache/fastembed_cache"
       OLLAMA_HOST: "http://192.168.204.21:11434"
       OLLAMA_EMBED_MODEL: "bge-m3:latest"
       OLLAMA_LLM_MODEL: "qwen2.5:14b"
-
       QDRANT_HOST: "192.168.204.20"
       QDRANT_PORT: "6333"
+    volumes:
+      - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/hf_cache:/root/.cache/hf_cache"
+      - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/fastembed_cache:/root/.cache/fastembed_cache"
     restart: unless-stopped
+
+  # 2. Dashboard de synchronisation Nextcloud
+  dashboard:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: rag-dashboard
+    ports:
+      - "8001:8001"
+    env_file:
+      - ../.env
+    environment:
+      TZ: "Europe/Paris"
+      # --- BRIDAGE CPU (Prévention du Thread Thrashing pour Docling OCR) ---
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      OPENBLAS_NUM_THREADS: "4"
+ 
+      HF_HUB_OFFLINE: "1"
+      HF_HOME: "/root/.cache/hf_cache"
+      FASTEMBED_CACHE_PATH: "/root/.cache/fastembed_cache"
+      # Docling charge ses propres modèles (ds4sd/docling-models) via ce chemin.
+      # Distinct de HF_HOME — obligatoire pour le pipeline d'indexation PDF.
+      DOCLING_ARTIFACTS_PATH: "/root/.cache/docling_cache"
+      OLLAMA_HOST: "http://192.168.204.21:11434"
+      OLLAMA_EMBED_MODEL: "bge-m3:latest"
+      OLLAMA_LLM_MODEL: "qwen2.5:14b"
+      QDRANT_HOST: "192.168.204.20"
+      QDRANT_PORT: "6333"
+    volumes:
+      - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/hf_cache:/root/.cache/hf_cache"
+      - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/fastembed_cache:/root/.cache/fastembed_cache"
+      # Cache des modèles Docling (layout PDF, tableaux) — séparé de HF_HOME
+      - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/docling_cache:/root/.cache/docling_cache"
+      # Persistance des mappings et de l'historique des syncs entre restarts
+      - "/root/ramcn/rag-pc4u/src/rag_pc4u/dashboard/mapping:/app/src/rag_pc4u/dashboard/mapping"
+    command: ["uv", "run", "python", "-m", "rag_pc4u.dashboard.run_dashboard"]
+    restart: unless-stopped
+    depends_on:
+      - api
+
+  # 3. Serveur Whisper optimisé pour le RAG
+  whisper:
+      image: fedirz/faster-whisper-server:latest-cpu
+      container_name: rag-whisper
+      ports:
+        - "8002:8000"  # <-- CORRECTION : Écoute sur 8000 à l'intérieur, exposé sur 8002 à l'extérieur
+      environment:
+        - WHISPER_MODEL=large-v3
+        - WHISPER_COMPUTE__TYPE=int8_float32
+        - WHISPER_CPU_THREADS=8
+        - WHISPER_NUM_WORKERS=1
+      volumes:
+        - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/whisper:/root/.cache/whisper"
+      restart: unless-stopped

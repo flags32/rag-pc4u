@@ -15,7 +15,7 @@ __pycache__/
 *.swp
 *.swo
 *.md~
-
+.idea/
 # Build
 dist/
 build/
@@ -29,4 +29,6 @@ build/
 Thumbs.db
 
 JOURNAL.md
+mapping/
 fichier_injecter/
+nextcloud_cache/

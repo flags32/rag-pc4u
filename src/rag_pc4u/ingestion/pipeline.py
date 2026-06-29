@@ -1,10 +1,17 @@
 """Pipeline d'indexation Haystack — ciblé par collection."""
-from haystack import Pipeline
+import logging
+import os
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
+from haystack import Pipeline, Document, component
 from haystack.components.converters.txt import TextFileToDocument
 from haystack.components.preprocessors import DocumentCleaner, DocumentSplitter
 from haystack.components.routers import FileTypeRouter
 from haystack.components.writers import DocumentWriter
 from haystack.components.joiners import DocumentJoiner
+from haystack.dataclasses import ByteStream
 
 from haystack_integrations.components.embedders.fastembed import (
     FastembedSparseDocumentEmbedder,
@@ -16,6 +23,7 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling_haystack.converter import DoclingConverter
 from docling.chunking import HybridChunker
+from transformers import AutoTokenizer
 
 from rag_pc4u.core.components import get_document_store
 from rag_pc4u.core.config import settings
@@ -23,22 +31,163 @@ from rag_pc4u.core.custom_components.csv_converter import CSVRowToDocument
 # Import unique depuis custom_components — aucune duplication
 from rag_pc4u.core.custom_components.enricher import MetadataEnricher
 from rag_pc4u.core.custom_components.extensionless import ExtensionlessToDocument
+from rag_pc4u.core.custom_components.structured_converter import StructuredDataToDocument
+from rag_pc4u.core.custom_components.whisper_transcriber import RemoteWhisperTranscriber
+logger = logging.getLogger(__name__)
+
+# Chemin local du cache HuggingFace (cohérent avec docker-compose.yml)
+_HF_CACHE = Path(os.environ.get("HF_HOME", "/root/.cache/hf_cache"))
+_BGE_M3_LOCAL = _HF_CACHE / "hub" / "models--BAAI--bge-m3"
 
 
-def _make_docling_converter() -> DoclingConverter:
-    """Construit le convertisseur Docling pour les PDF."""
-    pdf_pipeline_options = PdfPipelineOptions(do_ocr=False)
+@lru_cache(maxsize=1)
+def _get_bge_tokenizer() -> AutoTokenizer:
+    """
+    Charge le tokenizer BAAI/bge-m3 depuis le cache local uniquement.
+    Mis en cache pour n'être instancié qu'une seule fois.
+
+    HF_HUB_OFFLINE=1 est positionné dans docker-compose, mais on force
+    local_files_only=True ici aussi pour être explicite et fonctionner
+    même hors Docker (ex: dev local).
+    """
+    # Cherche d'abord dans le snapshot le plus récent du cache
+    snapshots_dir = _BGE_M3_LOCAL / "snapshots"
+    if snapshots_dir.exists():
+        snapshots = sorted(snapshots_dir.iterdir(), reverse=True)
+        if snapshots:
+            return AutoTokenizer.from_pretrained(
+                str(snapshots[0]),
+                local_files_only=True,
+            )
+
+    # Fallback : laisser HF chercher dans tout le cache via le nom du modèle
+    # (fonctionne si HF_HOME est bien défini et HF_HUB_OFFLINE=1)
+    return AutoTokenizer.from_pretrained(
+        "BAAI/bge-m3",
+        local_files_only=True,
+        cache_dir=str(_HF_CACHE),
+    )
+
+
+class PatchedDoclingConverter(DoclingConverter):
+    """
+    Sous-classe de DoclingConverter qui garantit que file_path est toujours
+    présent dans doc.meta après conversion.
+
+    Docling avec export_type="doc_chunks" ne garantit pas que dl_meta.origin.filename
+    est renseigné. On intercepte le résultat et on injecte file_path depuis la
+    source d'origine selon trois niveaux de fallback :
+      1. dl_meta.origin.filename / uri  — ce que Docling pose normalement
+      2. binary_hash                    — si Docling a hashé le contenu
+      3. source unique                  — si un seul fichier a été passé
+    """
+
+    @component.output_types(documents=List[Document])
+    def run(
+        self,
+        sources: List[Union[str, Path, ByteStream]],
+        meta: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+    ) -> Dict[str, List[Document]]:
+        result = super().run(sources=sources, meta=meta)
+        docs: List[Document] = result.get("documents", [])
+
+        source_paths = _extract_source_paths(sources)
+
+        for doc in docs:
+            # Si file_path est déjà là (ex: version future de docling), on ne touche pas
+            if doc.meta.get("file_path"):
+                continue
+
+            # 1. Tenter de récupérer le chemin depuis dl_meta
+            dl_origin = (doc.meta.get("dl_meta") or {}).get("origin") or {}
+            path_from_docling = dl_origin.get("filename") or dl_origin.get("uri") or ""
+            if path_from_docling.startswith("file://"):
+                path_from_docling = path_from_docling[7:]
+
+            if path_from_docling:
+                doc.meta["file_path"] = path_from_docling
+                continue
+
+            # 2. Fallback via binary_hash
+            binary_hash = dl_origin.get("binary_hash")
+            if binary_hash and binary_hash in source_paths:
+                doc.meta["file_path"] = source_paths[binary_hash]
+                continue
+
+            # 3. Dernier recours : source unique OU source trouvée via chemin exact
+            # Point 7 — Gros fichiers : Docling peut ne pas renseigner dl_meta.origin
+            # correctement sur de très gros fichiers. Si on n'a qu'une source dans
+            # la liste (cas systématique avec la parallélisation — chaque worker
+            # traite un seul fichier à la fois), on l'utilise directement.
+            if len(source_paths) == 1:
+                doc.meta["file_path"] = next(iter(source_paths.values()))
+            elif len(source_paths) > 1:
+                # Tentative de correspondance via le nom du fichier (dernier segment
+                # du href Docling vs clé du chemin source) comme ultime fallback.
+                doc_name = Path(path_from_docling or "").name
+                matched = next(
+                    (v for k, v in source_paths.items()
+                     if isinstance(k, str) and Path(k).name == doc_name),
+                    None,
+                )
+                if matched:
+                    doc.meta["file_path"] = matched
+                else:
+                    logger.warning(
+                        "PatchedDoclingConverter: impossible de déterminer file_path "
+                        "pour doc.id=%s (meta=%r)", doc.id, doc.meta
+                    )
+
+        return {"documents": docs}
+
+
+def _extract_source_paths(
+    sources: List[Union[str, Path, ByteStream]],
+) -> Dict[Any, str]:
+    """
+    Construit un dict {clé → chemin_str} à partir des sources passées à Docling.
+
+    Point 7 — Gros fichiers : pour les ByteStream, on utilise en priorité
+    file_path (extrait de src.meta) comme clé, car hash(src.data) peut être
+    coûteux ou échouer silencieusement sur de très gros objets en mémoire.
+    Le hash sur les données brutes n'est utilisé qu'en dernier recours.
+    """
+    result: Dict[Any, str] = {}
+    for src in sources:
+        if isinstance(src, (str, Path)):
+            p = str(src)
+            result[p] = p
+        elif isinstance(src, ByteStream):
+            fp = (src.meta or {}).get("file_path", "")
+            if fp:
+                # Clé primaire : le chemin lui-même — garanti unique par fichier,
+                # jamais perdu même sur un ByteStream de plusieurs Go.
+                result[str(fp)] = str(fp)
+                # Clé secondaire : hash des données pour rétrocompatibilité
+                # avec le code qui utilise binary_hash comme clé de lookup.
+                try:
+                    result[hash(src.data)] = str(fp)
+                except Exception:
+                    pass  # Gros fichier : on se contente de la clé primaire
+    return result
+
+
+def _make_docling_converter() -> PatchedDoclingConverter:
+    # do_ocr=True active l'OCR pour extraire le texte des PDF scannés et des images
+    pdf_pipeline_options = PdfPipelineOptions(do_ocr=True)
     doc_converter = DocumentConverter(
         format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_pipeline_options)
         }
     )
-    return DoclingConverter(
+    return PatchedDoclingConverter(
         converter=doc_converter,
         export_type="doc_chunks",
         chunker=HybridChunker(
-            tokenizer="BAAI/bge-m3",
-            max_tokens=settings.chunk_size,
+            # On passe l'objet tokenizer directement — Docling ne touche pas
+            # à HuggingFace Hub, aucune requête réseau possible.
+            tokenizer=_get_bge_tokenizer(),
+            max_tokens= 384,
         ),
     )
 
@@ -57,19 +206,69 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
     pipeline = Pipeline()
 
     # ── Routage et conversion ─────────────────────────────────────────────────
-    # Ajout du type MIME pour le CSV
+    # Ajout du type MIME pour le CSV, le web, l'office, et désormais les images
     pipeline.add_component(
         "router",
-        FileTypeRouter(mime_types=["text/plain", "application/pdf", "text/markdown", "text/csv"]),
+        FileTypeRouter(mime_types=[
+            "text/plain",
+            "application/pdf",
+            "text/markdown",
+            "text/csv",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "text/html",
+            "image/jpeg",
+            "image/png",
+            "image/tiff",  # CORRECTION : Virgule ajoutée ici
+            "application/json",
+            "application/xml",
+            "text/xml",
+            # --- EXTENSIONS AUDIO ---
+            "audio/mpeg",       # .mp3
+            "audio/wav",        # .wav
+            "audio/x-wav",      # .wav (variante MIME)
+            "audio/mp4",        # .m4a / .aac
+            "audio/ogg",        # .ogg / .opus
+            "audio/x-ms-wma",   # .wma
+            "audio/flac",       # .flac
+
+            # --- EXTENSIONS VIDÉO (Extraction Audio via Whisper/FFmpeg) ---
+            "video/mp4",        # .mp4
+            "video/quicktime",  # .mov
+            "video/x-matroska", # .mkv
+            "video/x-msvideo",  # .avi
+            "video/webm"        # .webm
+        ]),
     )
-    pipeline.add_component("pdf_converter", _make_docling_converter())
-    pipeline.add_component("txt_converter", TextFileToDocument())
-    pipeline.add_component("md_converter", TextFileToDocument())
+    pipeline.add_component("docling_converter", _make_docling_converter())
+    # store_full_path=True est OBLIGATOIRE ici : sans ce paramètre, les
+    # versions récentes de Haystack ne stockent QUE le nom du fichier dans
+    # meta.file_path (pas le chemin absolu complet). run.py et
+    # nextcloud_watcher.py filtrent et suppriment les anciens chunks en
+    # comparant le chemin absolu complet — si seul le nom de fichier est
+    # stocké, ce filtre ne trouve jamais de correspondance, les anciens
+    # chunks ne sont jamais supprimés, et chaque modification ajoute un
+    # doublon au lieu de remplacer l'ancien contenu.
+    pipeline.add_component("txt_converter", TextFileToDocument(store_full_path=True))
+    pipeline.add_component("md_converter", TextFileToDocument(store_full_path=True))
     pipeline.add_component("extensionless_converter", ExtensionlessToDocument())
 
-    # Ajout du composant CSV
+    # Ajout du composant CSV et du JSON et XML
     pipeline.add_component("csv_converter", CSVRowToDocument())
+    pipeline.add_component("structured_converter", StructuredDataToDocument())
 
+    # ajout du composant pour les audio
+    # timeout_seconds=7200 : large-v3 sur CPU peut prendre jusqu'à 2h pour un long audio.
+    # max_retries=0 (dans whisper_transcriber.py) : on ne veut PAS que le client OpenAI
+    # envoie une 2ème requête pendant que Whisper traite encore la 1ère.
+    pipeline.add_component(
+        "audio_converter",
+        RemoteWhisperTranscriber(
+            api_base_url="http://rag-whisper:8000/v1",
+            timeout_seconds=7_200,  # 2 heures — ajuster selon la durée max attendue
+        )
+    )
     # ── Joiners ───────────────────────────────────────────────────────────────
     pipeline.add_component("joiner_txt", DocumentJoiner(join_mode="concatenate"))
     pipeline.add_component("joiner_main", DocumentJoiner(join_mode="concatenate"))
@@ -106,27 +305,61 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
 
     # ── Câblage ───────────────────────────────────────────────────────────────
 
-    # 1. Routage vers les convertisseurs (ajout du CSV)
-    pipeline.connect("router.application/pdf", "pdf_converter.sources")
+    # 1. Routage vers les convertisseurs textuels, office et images
+    pipeline.connect("router.application/pdf", "docling_converter.sources")
+    pipeline.connect("router.application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                     "docling_converter.sources")
+    pipeline.connect("router.application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                     "docling_converter.sources")
+    pipeline.connect("router.application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                     "docling_converter.sources")
+    pipeline.connect("router.text/html", "docling_converter.sources")
+    pipeline.connect("router.image/jpeg", "docling_converter.sources")
+    pipeline.connect("router.image/png", "docling_converter.sources")
+    pipeline.connect("router.image/tiff", "docling_converter.sources")
+
     pipeline.connect("router.text/plain", "txt_converter.sources")
     pipeline.connect("router.text/markdown", "md_converter.sources")
     pipeline.connect("router.text/csv", "csv_converter.sources")
     pipeline.connect("router.unclassified", "extensionless_converter.sources")
+
+    pipeline.connect("router.application/json", "structured_converter.sources")
+    pipeline.connect("router.application/xml", "structured_converter.sources")
+    pipeline.connect("router.text/xml", "structured_converter.sources")
+
+    # 1b. ROUTAGE AUDIO & VIDÉO VERS TON COMPOSANT WHISPER DISTANT
+    pipeline.connect("router.audio/mpeg", "audio_converter.sources")
+    pipeline.connect("router.audio/wav", "audio_converter.sources")
+    pipeline.connect("router.audio/x-wav", "audio_converter.sources")
+    pipeline.connect("router.audio/mp4", "audio_converter.sources")
+    pipeline.connect("router.audio/ogg", "audio_converter.sources")
+    pipeline.connect("router.audio/x-ms-wma", "audio_converter.sources")
+    pipeline.connect("router.audio/flac", "audio_converter.sources")
+
+    pipeline.connect("router.video/mp4", "audio_converter.sources")
+    pipeline.connect("router.video/quicktime", "audio_converter.sources")
+    pipeline.connect("router.video/x-matroska", "audio_converter.sources")
+    pipeline.connect("router.video/x-msvideo", "audio_converter.sources")
+    pipeline.connect("router.video/webm", "audio_converter.sources")
 
     # 2. Collecte des formats textuels purs (qui doivent être découpés)
     pipeline.connect("txt_converter.documents", "joiner_txt.documents")
     pipeline.connect("md_converter.documents", "joiner_txt.documents")
     pipeline.connect("extensionless_converter.documents", "joiner_txt.documents")
 
+
+
     # 3. Nettoyage et découpage de la branche texte
     pipeline.connect("joiner_txt.documents", "cleaner.documents")
     pipeline.connect("cleaner.documents", "splitter.documents")
 
-    # 4. Fusion finale : chunks PDF + chunks texte + chunks CSV
-    pipeline.connect("pdf_converter.documents", "joiner_main.documents")
+    # 4. chunks PDF + chunks texte + chunks CSV + TRANSCRIPTIONS WHISPER
+    pipeline.connect("docling_converter.documents", "joiner_main.documents")
     pipeline.connect("splitter.documents", "joiner_main.documents")
-    # Le CSV rejoint le pipeline ici (bypass du splitter !)
+
     pipeline.connect("csv_converter.documents", "joiner_main.documents")
+    pipeline.connect("structured_converter.documents", "joiner_main.documents")
+    pipeline.connect("audio_converter.documents", "joiner_main.documents")
 
     # 5. Enrichissement → embeddings → stockage
     pipeline.connect("joiner_main.documents", "enricher.documents")

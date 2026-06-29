@@ -12,7 +12,6 @@ from rag_pc4u.core.config import settings
 logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["Health"])
 
-
 async def _ping_qdrant() -> dict[str, Any]:
     """
     Vérifie que Qdrant répond et que la collection existe.

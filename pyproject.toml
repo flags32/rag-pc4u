@@ -45,6 +45,9 @@ dependencies = [
     "docling-haystack>=1.0.0",
     "transformers>=4.50.0",
     "docling-slim>=2.96.1",
+    "apscheduler>=3.11.2",
+    "pytz>=2026.2",
+    "openai>=2.38.0",
 ]
 
 [dependency-groups]
