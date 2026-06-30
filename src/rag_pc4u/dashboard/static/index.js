@@ -345,10 +345,65 @@ function addCurrentPath() {
   renderSelPaths();
 }
 
-/* Supprime un chemin de la liste */
-function removeSelPath(idx) {
-  S.selPaths.splice(idx, 1);
-  renderSelPaths();
+/* Construit le local_path attendu par l'API deindex-file pour un chemin
+   sélectionné, en mode édition. Partagé entre renderSelPaths() et
+   removeSelPath() pour rester cohérent. */
+function localPathForSelPath(p) {
+  if (!S.editingId) return null;
+  const mapping = S.mappings.find(x => x.id === S.editingId);
+  if (!mapping) return null;
+  const fileName = p.split('/').pop();
+  return `nextcloud_cache/${mapping.collection_name}/${fileName}`;
+}
+
+/* Supprime un chemin de la liste.
+   En mode édition, on ne retire JAMAIS le chemin localement avant d'avoir
+   la confirmation du backend qu'il n'y a plus de chunks indexés pour ce
+   fichier — sinon l'UI affiche un faux "désindexé" alors que les chunks
+   sont toujours dans Qdrant (point 1 du rapport de bugs). */
+async function removeSelPath(idx) {
+  const path = S.selPaths[idx];
+  if (path === undefined) return;
+
+  if (!S.editingId) {
+    // Mode création : aucun fichier n'a encore été indexé, retrait local sûr.
+    S.selPaths.splice(idx, 1);
+    renderSelPaths();
+    return;
+  }
+
+  const localPath = localPathForSelPath(path);
+  if (!localPath) {
+    toast('Impossible de déterminer le chemin local pour ce fichier', 'error');
+    return;
+  }
+
+  if (!confirm(
+    `Retirer "${path}" du mapping ?\n\n` +
+    `Si des chunks sont encore indexés pour ce fichier dans Qdrant, ils seront supprimés avant le retrait.`
+  )) return;
+
+  try {
+    const r = await api(`/api/mappings/${S.editingId}/deindex-file`, {
+      method: 'POST',
+      body: JSON.stringify({ local_path: localPath }),
+    });
+
+    // On ne met à jour S.selPaths qu'après confirmation explicite du
+    // backend — on ne fait jamais confiance à l'état local seul.
+    const remaining = (typeof r.remaining_chunks === 'number') ? r.remaining_chunks : 0;
+    if (remaining > 0) {
+      toast(`${remaining} chunk(s) encore présent(s) — retrait bloqué`, 'error');
+      return;
+    }
+
+    toast(`${r.deindexed_chunks} chunk(s) supprimé(s) pour ${path.split('/').pop()}`, 'success');
+    S.selPaths.splice(idx, 1);
+    renderSelPaths();
+    loadMappings();
+  } catch (e) {
+    toast(`Erreur : ${e.message}`, 'error');
+  }
 }
 
 /* Affiche la liste des chemins sélectionnés sous le navigateur.
@@ -370,9 +425,7 @@ function renderSelPaths() {
     const fileName = p.split('/').pop();
     /* En mode édition on construit le local_path pour l'API deindex-file.
        Le cache local est nextcloud_cache/<collection>/<filename>. */
-    const localPath = isEdit && mapping
-      ? `nextcloud_cache/${mapping.collection_name}/${fileName}`
-      : null;
+    const localPath = isEdit ? localPathForSelPath(p) : null;
 
     const deindexBtn = isEdit
       ? `<button class="sel-path-deindex" title="Désindexer ce fichier"
@@ -381,11 +434,11 @@ function renderSelPaths() {
          </button>`
       : '';
 
-    /* ✕ : en mode édition, on prévient que la suppression du chemin
-       du mapping n'efface pas les chunks Qdrant — l'utilisateur doit
-       désindexer d'abord s'il veut retirer proprement. */
+    /* ✕ : en mode édition, le clic appelle désormais le backend pour
+       désindexer le fichier avant de le retirer de la liste — la
+       suppression locale seule (sans confirmation backend) est interdite. */
     const removeTitle = isEdit
-      ? 'Retirer de la liste (sans désindexer les chunks Qdrant)'
+      ? 'Désindexer puis retirer de la liste'
       : 'Retirer ce chemin';
 
     return `
