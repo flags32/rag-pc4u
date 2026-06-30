@@ -14,7 +14,7 @@ from rag_pc4u.core.config import settings
 from rag_pc4u.core.logger_config import configure_logging
 
 logger = structlog.get_logger(__name__)
-
+"""
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -23,8 +23,8 @@ def custom_openapi():
         app.openapi_schema = yaml.safe_load(f)
     return app.openapi_schema
 
-app.openapi = custom_openapi
-
+app.openapi = custom_openapi 
+"""
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     configure_logging()

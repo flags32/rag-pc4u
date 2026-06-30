@@ -11,7 +11,7 @@ FIXES appliqués :
      Les timestamps start/end de chaque chunk sont conservés dans les métadonnées.
      → Connecter audio_converter.documents vers joiner_txt.documents dans pipeline.py.
 """
-
+from typing import Any
 import mimetypes
 from pathlib import Path
 from typing import Dict, List, Optional, Union
@@ -54,7 +54,7 @@ def _resolve_mime(path: Path) -> str:
 
 
 def _split_segments(
-    segments: List[dict],
+    segments: List[Any],
     chunk_words: int,
     overlap_words: int,
     base_meta: dict,
@@ -92,22 +92,23 @@ def _split_segments(
         return []
 
     documents: List[Document] = []
-    current_segments: List[dict] = []
+    current_segments: List[Any] = []
     current_word_count = 0
     overlap_prefix = ""  # texte d'overlap issu du chunk précédent
 
-    def _flush(segs: List[dict], prefix: str, chunk_idx: int) -> str:
+    def _flush(segs: List[Any], prefix: str, chunk_idx: int) -> str:
         """Construit un Document à partir des segments accumulés, retourne le texte d'overlap."""
-        text = (prefix + " " + " ".join(s["text"].strip() for s in segs)).strip()
+        # CORRECTION : seg.text au lieu de seg["text"]
+        text = (prefix + " " + " ".join(s.text.strip() for s in segs)).strip()
         documents.append(
             Document(
                 content=text,
                 meta={
                     **base_meta,
                     "chunk_index": chunk_idx,
-                    # Timestamps : début du 1er segment, fin du dernier
-                    "start_time": segs[0]["start"],
-                    "end_time": segs[-1]["end"],
+                    # CORRECTION : seg.start et seg.end
+                    "start_time": segs[0].start,
+                    "end_time": segs[-1].end,
                 },
             )
         )
@@ -116,7 +117,8 @@ def _split_segments(
         return " ".join(words[-overlap_words:]) if len(words) > overlap_words else ""
 
     for seg in segments:
-        seg_words = len(seg["text"].split())
+        # CORRECTION : seg.text
+        seg_words = len(seg.text.split())
         current_segments.append(seg)
         current_word_count += seg_words
 
