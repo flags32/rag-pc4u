@@ -435,9 +435,35 @@ async def api_deindex_file(mapping_id: str, body: dict):
 
     try:
         count = deindex_file(local_path, mapping["collection_name"])
-        return {"deindexed_chunks": count, "local_path": local_path}
     except Exception as e:
         raise HTTPException(500, f"Erreur lors de la désindexation : {e}")
+
+    # Si le mapping ne contient plus aucun chunk indexé, on supprime
+    # automatiquement le mapping devenu inutile (collection Qdrant + cache local).
+    remaining = count_indexed_chunks(mapping["collection_name"])
+    mapping_deleted = False
+    if remaining == 0:
+        try:
+            deindex_collection(mapping["collection_name"])
+            _cleanup_mapping_cache(mapping)
+            _scheduler.remove_job(mapping_id)
+            ds.delete_mapping(mapping_id)
+            _in_progress.pop(mapping_id, None)
+            mapping_deleted = True
+            logger.info("dashboard.deindex_file_autocleanup", mapping_id=mapping_id)
+        except Exception as e:
+            logger.error(
+                "dashboard.deindex_file_autocleanup_failed",
+                mapping_id=mapping_id,
+                error=str(e),
+            )
+
+    return {
+        "deindexed_chunks": count,
+        "local_path": local_path,
+        "remaining_chunks": remaining,
+        "mapping_deleted": mapping_deleted,
+    }
 
 
 @app.get("/api/mappings/{mapping_id}/chunks", tags=["Désindexation"])

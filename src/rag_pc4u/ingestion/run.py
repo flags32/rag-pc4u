@@ -124,8 +124,8 @@ def deindex_collection(collection_name: str) -> int:
     Qdrant elle-même.
 
     Utilisé par le workflow "Désindexer tout" du dashboard :
-      1. Supprime tous les documents de la collection Qdrant.
-      2. Supprime la collection Qdrant (drop physique).
+      1. Compte les chunks de la collection (pour info/retour).
+      2. Supprime la collection Qdrant (drop physique, atomique).
       3. Supprime le fichier d'état d'ingestion local.
 
     Args:
@@ -136,31 +136,43 @@ def deindex_collection(collection_name: str) -> int:
     """
     ds = get_document_store(collection_name)
 
-    # Compte et supprime tous les documents de la collection
+    """
+    Erreur 3
+    Compte les chunks AVANT le drop, uniquement pour le retour/les logs.
+    On évite volontairement tout filter_documents()/delete_documents() sur
+    l'ensemble de la collection : ça charge potentiellement des milliers de
+    documents (contenu + embeddings) en mémoire puis envoie un delete massif
+    en un seul appel réseau, ce qui provoque des timeouts sur les grosses
+    collections (cf. deindex.collection_chunks_failed). Comme la collection
+    va être droppée physiquement juste après, ce nettoyage document-par-
+    document est redondant : delete_collection supprime tout d'un coup.
+    """
     try:
-        all_docs = ds.filter_documents()
-        count = len(all_docs)
-        if all_docs:
-            ds.delete_documents(document_ids=[d.id for d in all_docs])
-            logger.info(
-                "deindex.collection_chunks_removed",
-                collection=collection_name,
-                count=count,
-            )
-    except Exception as e:
-        logger.error("deindex.collection_chunks_failed", collection=collection_name, error=str(e))
-        raise
-
-    # Suppression physique de la collection dans Qdrant
-    try:
-        ds.client.delete_collection(collection_name)
-        logger.info("deindex.collection_dropped", collection=collection_name)
+        count = ds.count_documents()
     except Exception as e:
         logger.warning(
+            "deindex.collection_count_failed",
+            collection=collection_name,
+            error=str(e),
+        )
+        count = 0
+
+    # Suppression physique de la collection dans Qdrant (opération atomique
+    # côté Qdrant, ne nécessite pas de supprimer les points un par un avant).
+    try:
+        ds.client.delete_collection(collection_name)
+        logger.info(
+            "deindex.collection_dropped",
+            collection=collection_name,
+            count=count,
+        )
+    except Exception as e:
+        logger.error(
             "deindex.collection_drop_failed",
             collection=collection_name,
             error=str(e),
         )
+        raise
 
     # Suppression de l'état d'ingestion local
     state_file = _state_file_for(collection_name)
