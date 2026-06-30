@@ -13,9 +13,11 @@ from typing import Dict, Any
 
 import structlog
 
+from qdrant_client import QdrantClient
+
 from rag_pc4u.core.config import settings
 from rag_pc4u.core.logger_config import configure_logging
-from rag_pc4u.core.components import get_document_store
+from rag_pc4u.core.components import get_document_store, _document_stores
 from rag_pc4u.core.tz_utils import now_paris_naive
 from rag_pc4u.ingestion.pipeline import build_indexing_pipeline
 from rag_pc4u.ingestion.sources import LocalDirectoryScanner
@@ -159,8 +161,14 @@ def deindex_collection(collection_name: str) -> int:
 
     # Suppression physique de la collection dans Qdrant (opération atomique
     # côté Qdrant, ne nécessite pas de supprimer les points un par un avant).
+    #
+    # On utilise volontairement un QdrantClient natif plutôt que le wrapper
+    # ds (QdrantDocumentStore) : ce dernier n'expose pas delete_collection
+    # de façon stable selon la version de haystack_integrations
+    # ('QdrantDocumentStore' object has no attribute 'delete_collection').
     try:
-        ds.client.delete_collection(collection_name)
+        client = QdrantClient(url=settings.qdrant_url)
+        client.delete_collection(collection_name)
         logger.info(
             "deindex.collection_dropped",
             collection=collection_name,
@@ -173,6 +181,13 @@ def deindex_collection(collection_name: str) -> int:
             error=str(e),
         )
         raise
+    finally:
+        # Toujours invalider le cache module-level, même en cas d'échec
+        # partiel du drop, pour éviter qu'un appel ultérieur à
+        # get_document_store() / count_indexed_chunks() ne réutilise une
+        # instance dans un état incertain (collection droppée ou non,
+        # client potentiellement cassé).
+        _document_stores.pop(collection_name, None)
 
     # Suppression de l'état d'ingestion local
     state_file = _state_file_for(collection_name)
@@ -195,9 +210,13 @@ def count_indexed_chunks(collection_name: str) -> int:
     try:
         ds = get_document_store(collection_name)
         return len(ds.filter_documents())
-    except Exception:
-        # La collection n'existe pas encore ou Qdrant est inaccessible —
-        # on retourne 0 pour ne pas bloquer inutilement l'utilisateur.
+    except Exception as e:
+        logger.error(
+            "count_indexed_chunks a échoué — retour 0 par défaut, "
+            "vérifier la collection/connexion Qdrant",
+            collection=collection_name,
+            error=str(e),
+        )
         return 0
 
 
