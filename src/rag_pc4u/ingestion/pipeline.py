@@ -250,8 +250,8 @@ def build_indexing_pipeline(collection_name: str) -> Pipeline:
     # stocké, ce filtre ne trouve jamais de correspondance, les anciens
     # chunks ne sont jamais supprimés, et chaque modification ajoute un
     # doublon au lieu de remplacer l'ancien contenu.
-    pipeline.add_component("txt_converter", TextFileToDocument(store_full_path=True))
-    pipeline.add_component("md_converter", TextFileToDocument(store_full_path=True))
+    pipeline.add_component("txt_converter", TextFileToDocument(store_full_path=True,encoding="utf-8-sig"))
+    pipeline.add_component("md_converter", TextFileToDocument(store_full_path=True,encoding="utf-8-sig"))
     pipeline.add_component("extensionless_converter", ExtensionlessToDocument())
 
     # Ajout du composant CSV et du JSON et XML
