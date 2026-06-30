@@ -5,7 +5,8 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from qdrant_client import QdrantClient
-
+import yaml
+from pathlib import Path
 from rag_pc4u.api.routes.query import router as query_router
 from rag_pc4u.api.routes.ingest import router as ingest_router
 from rag_pc4u.api.routes.health import router as health_router
@@ -14,6 +15,15 @@ from rag_pc4u.core.logger_config import configure_logging
 
 logger = structlog.get_logger(__name__)
 
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    spec_path = Path(__file__).resolve().parents[2] / "docs" / "openapi_rag_pc4u.yaml"
+    with open(spec_path) as f:
+        app.openapi_schema = yaml.safe_load(f)
+    return app.openapi_schema
+
+app.openapi = custom_openapi
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
