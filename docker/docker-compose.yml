@@ -63,7 +63,7 @@ services:
       # Cache des modèles Docling (layout PDF, tableaux) — séparé de HF_HOME
       - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/docling_cache:/root/.cache/docling_cache"
       # Persistance des mappings et de l'historique des syncs entre restarts
-      - "/root/ramcn/rag-pc4u/src/rag_pc4u/dashboard/mapping:/app/src/rag_pc4u/dashboard/mapping"
+      - "/root/ramcn/rag-pc4u/src/rag_pc4u/dashboard/mapping:src/rag_pc4u/dashboard/mapping"
     command: ["uv", "run", "python", "-m", "rag_pc4u.dashboard.run_dashboard"]
     restart: unless-stopped
     depends_on:

@@ -211,9 +211,28 @@ class NextcloudWatcher:
         - Fichier  → retourne ce fichier seul (extension non filtrée : un
           fichier choisi explicitement par l'utilisateur est toujours inclus).
 
-        Lève FileNotFoundError si le chemin n'existe pas côté Nextcloud.
+        Lève FileNotFoundError si le chemin n'existe pas côté Nextcloud
+        (que ce soit parce que le serveur répond 404, ou parce que le
+        PROPFIND aboutit mais renvoie une liste vide).
         """
-        probe = self._propfind(remote_path, depth=0)
+        try:
+            probe = self._propfind(remote_path, depth=0)
+        except requests.exceptions.HTTPError as e:
+            # Un chemin supprimé côté Nextcloud répond généralement 404 au
+            # PROPFIND — sans cette conversion explicite, raise_for_status()
+            # lève une HTTPError « brute » qui finissait dans le except
+            # Exception générique de _do_sync (traitée comme une simple
+            # erreur réseau), au lieu du except FileNotFoundError dédié au
+            # nettoyage du cache local. Résultat : les fichiers supprimés
+            # côté Nextcloud n'étaient jamais retirés du cache, donc jamais
+            # désindexés de Qdrant.
+            status = e.response.status_code if e.response is not None else None
+            if status == 404:
+                raise FileNotFoundError(
+                    f"Chemin Nextcloud introuvable : {remote_path}"
+                ) from e
+            raise
+
         if not probe:
             raise FileNotFoundError(f"Chemin Nextcloud introuvable : {remote_path}")
 
@@ -351,6 +370,16 @@ class NextcloudWatcher:
             # 1. Résolution du chemin (dossier OU fichier individuel — point 2)
             try:
                 remote_files = self.resolve_remote_path(remote_path)
+            except FileNotFoundError:
+                # Le chemin lui-même n'existe plus donc tous ses fichiers sont supprimés
+                logger.info("nextcloud.path_deleted", path=remote_path)
+                for href in previous_state:
+                    local_path = local_dir / Path(href).name
+                    if local_path.exists():
+                        local_path.unlink()
+                    stats["deleted"] += 1
+                self._save_state(remote_path, {})  # vider l'état
+                continue
             except Exception as e:
                 logger.error("nextcloud.list_failed", path=remote_path, error=str(e))
                 stats["errors"] += 1

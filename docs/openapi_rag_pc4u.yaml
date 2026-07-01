@@ -1,0 +1,1278 @@
+openapi: 3.1.0
+info:
+  title: RAG PC4U — Documentation complète
+  version: 2.0.0
+  description: |
+    ## Architecture générale
+
+    Le projet RAG PC4U expose **deux services FastAPI indépendants** :
+
+    | Service | Port | Description |
+    |---|---|---|
+    | **API principale** (Haystack/Chat) | `8000` | Endpoint compatible OpenAI — interrogation des collections RAG via Open WebUI ou tout client OpenAI |
+    | **Dashboard Nextcloud** | `8001` | Gestion des syncs Nextcloud → Qdrant, planification, désindexation |
+
+    ### Stack technique
+    - **LLM** : Ollama (`qwen2.5:14b`) hébergé sur `192.168.204.21:11434`
+    - **Embeddings** : Ollama (`bge-m3`) — hybride dense + sparse (Haystack)
+    - **Vector store** : Qdrant sur `192.168.204.20:6333`
+    - **Ingestion** : Docling (OCR PDF), Whisper (`large-v3`) pour l'audio/vidéo
+    - **Source de données** : Nextcloud via WebDAV
+
+    ### Authentification
+    Actuellement **aucune authentification active** en production. Support optionnel via
+    le header `X-API-Key` (configurable dans `.env` via `API_KEYS`).
+
+  contact:
+    name: PC4U
+  license:
+    name: Propriétaire
+
+servers:
+  - url: http://192.168.204.23:8000
+    description: API principale RAG (Chat / Haystack)
+  - url: http://192.168.204.23:8001
+    description: Dashboard Nextcloud Sync
+
+tags:
+  - name: Health
+    description: Vérification de l'état des dépendances (Qdrant, Ollama)
+  - name: Query
+    description: |
+      Endpoint compatible OpenAI — interrogation des collections RAG.
+      Utilisé par Open WebUI, mais compatible avec tout client OpenAI (`/v1/chat/completions`).
+  - name: Mappings
+    description: |
+      CRUD complet sur les mappings Nextcloud → Collection Qdrant.
+      Un mapping associe un ou plusieurs chemins Nextcloud distants à une collection Qdrant cible,
+      avec un intervalle de synchronisation automatique.
+  - name: Sync
+    description: Déclenchement manuel d'une synchronisation
+  - name: Désindexation
+    description: Suppression de chunks Qdrant (fichier individuel ou collection entière)
+  - name: Historique
+    description: Consultation de l'historique des synchronisations
+  - name: Nextcloud
+    description: Navigation dans l'arborescence Nextcloud (explorateur WebDAV)
+  - name: Infos
+    description: Statut global du Dashboard
+
+# ─────────────────────────────────────────────
+#  COMPOSANTS RÉUTILISABLES
+# ─────────────────────────────────────────────
+components:
+  schemas:
+
+    # ── API principale ──────────────────────────────────────
+
+    ChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant, system]
+          example: user
+        content:
+          type: string
+          example: "Comment configurer le VPN ?"
+
+    ChatCompletionRequest:
+      type: object
+      required: [model, messages]
+      properties:
+        model:
+          type: string
+          description: |
+            Nom de la collection Qdrant à interroger.
+            Correspond à l'un des identifiants retournés par `GET /v1/models`.
+          example: documents_client_demo
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+          description: |
+            Historique de la conversation au format OpenAI.
+            Seul le **dernier message `role: user`** est utilisé comme requête RAG.
+            Les messages précédents sont ignorés par le pipeline actuel.
+        temperature:
+          type: number
+          format: float
+          default: 0.7
+          minimum: 0.0
+          maximum: 2.0
+          description: Température de génération (transmise à Ollama)
+        stream:
+          type: boolean
+          default: false
+          description: |
+            Si `true`, la réponse est envoyée en SSE (Server-Sent Events) au format
+            `chat.completion.chunk` — compatible Open WebUI streaming.
+
+    ChatCompletionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          example: chatcmpl-rag-pc4u
+        object:
+          type: string
+          example: chat.completion
+        created:
+          type: integer
+          description: Timestamp Unix de création
+          example: 1718000000
+        model:
+          type: string
+          example: documents_client_demo
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+                example: 0
+              message:
+                $ref: '#/components/schemas/ChatMessage'
+              finish_reason:
+                type: string
+                example: stop
+
+    ChatCompletionChunk:
+      type: object
+      description: "Fragment SSE retourné en mode `stream: true`"
+      properties:
+        id:
+          type: string
+          example: chatcmpl-rag-pc4u-stream
+        object:
+          type: string
+          example: chat.completion.chunk
+        created:
+          type: integer
+          example: 1718000000
+        model:
+          type: string
+          example: documents_client_demo
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              delta:
+                type: object
+                properties:
+                  content:
+                    type: string
+                    description: "Token généré. Vide `{}` sur le chunk final (`finish_reason: stop`)"
+              finish_reason:
+                type: string
+                nullable: true
+                example: null
+
+    ModelObject:
+      type: object
+      description: Représentation d'une collection Qdrant comme un "modèle" OpenAI
+      properties:
+        id:
+          type: string
+          description: Nom de la collection Qdrant (affiché dans le sélecteur Open WebUI)
+          example: documents_client_demo
+        object:
+          type: string
+          example: model
+        created:
+          type: integer
+          example: 1718000000
+        owned_by:
+          type: string
+          example: pc4u
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+          description: "`ok` si Qdrant et Ollama répondent tous les deux, `degraded` sinon"
+        timestamp:
+          type: integer
+          description: Timestamp Unix
+        client_id:
+          type: string
+          example: client_demo
+        collection:
+          type: string
+          example: documents_client_demo
+        dependencies:
+          type: object
+          properties:
+            qdrant:
+              $ref: '#/components/schemas/DependencyStatus'
+            ollama:
+              $ref: '#/components/schemas/DependencyStatus'
+
+    DependencyStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, error]
+        documents:
+          type: integer
+          description: Nombre de documents dans la collection (Qdrant uniquement)
+        model:
+          type: string
+          description: Modèle LLM configuré (Ollama uniquement)
+          example: qwen2.5:14b
+        detail:
+          type: string
+          description: Message d'erreur si `status = error`
+
+    # ── Dashboard ──────────────────────────────────────────
+
+    MappingCreate:
+      type: object
+      required: [remote_paths, collection_name]
+      properties:
+        remote_paths:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: |
+            Liste de chemins Nextcloud (dossiers ou fichiers individuels).
+            Plusieurs chemins permettent d'alimenter une même collection depuis
+            différents dossiers Nextcloud.
+          example: ["/documents/rh", "/documents/juridique"]
+        collection_name:
+          type: string
+          description: Nom de la collection Qdrant cible (créée automatiquement si inexistante)
+          example: documents_rh
+        interval_minutes:
+          type: integer
+          default: 15
+          minimum: 1
+          maximum: 10080
+          description: |
+            Intervalle de synchronisation en minutes.
+            Maximum : 10 080 min = 7 jours (sync hebdomadaire).
+          example: 60
+        label:
+          type: string
+          nullable: true
+          description: Libellé affiché dans le dashboard (doit être unique)
+          example: "RH + Juridique"
+        start_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Date/heure ISO 8601 de la première sync planifiée.
+            Si absent, la première sync est déclenchée immédiatement à la création.
+          example: "2025-06-01T08:00:00"
+
+    MappingUpdate:
+      type: object
+      description: Tous les champs sont optionnels — seuls les champs fournis sont mis à jour.
+      properties:
+        remote_paths:
+          type: array
+          items:
+            type: string
+          nullable: true
+          example: ["/documents/rh"]
+        collection_name:
+          type: string
+          nullable: true
+          example: documents_rh_v2
+        interval_minutes:
+          type: integer
+          minimum: 1
+          maximum: 10080
+          nullable: true
+          example: 30
+        label:
+          type: string
+          nullable: true
+          example: "RH uniquement"
+        start_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
+
+    MappingObject:
+      type: object
+      description: Mapping complet tel que retourné par l'API
+      properties:
+        id:
+          type: string
+          description: Identifiant unique du mapping (UUID)
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        remote_paths:
+          type: array
+          items:
+            type: string
+          example: ["/documents/rh"]
+        collection_name:
+          type: string
+          example: documents_rh
+        interval_minutes:
+          type: integer
+          example: 60
+        label:
+          type: string
+          nullable: true
+          example: "RH + Juridique"
+        start_at:
+          type: string
+          nullable: true
+          example: null
+        active:
+          type: boolean
+          example: true
+        last_sync:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2025-05-30T14:23:00"
+        last_status:
+          type: string
+          nullable: true
+          enum: [ok, error, null]
+          example: ok
+        last_stats:
+          $ref: '#/components/schemas/SyncStats'
+        in_progress:
+          type: boolean
+          description: Indique si une sync est actuellement en cours sur ce mapping
+          example: false
+        next_run:
+          type: string
+          format: date-time
+          nullable: true
+          description: Prochaine exécution planifiée (fournie par APScheduler)
+          example: "2025-05-30T15:23:00"
+
+    SyncStats:
+      type: object
+      description: Statistiques de la dernière synchronisation
+      properties:
+        status:
+          type: string
+          enum: [ok, error]
+        new:
+          type: integer
+          description: Nombre de fichiers nouvellement ingérés
+          example: 5
+        modified:
+          type: integer
+          description: Nombre de fichiers mis à jour
+          example: 2
+        deleted:
+          type: integer
+          description: Nombre de fichiers supprimés de l'index
+          example: 0
+        errors:
+          type: integer
+          description: Nombre d'erreurs d'ingestion
+          example: 0
+        finished_at:
+          type: string
+          format: date-time
+          example: "2025-05-30T14:23:05"
+        error_message:
+          type: string
+          nullable: true
+          description: Message d'erreur si `status = error`
+
+    SyncResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [started, already_running]
+          example: started
+        mapping_id:
+          type: string
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+    DashboardStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        nextcloud_connected:
+          type: boolean
+          description: Résultat du test de connexion WebDAV Nextcloud
+          example: true
+        nextcloud_url:
+          type: string
+          example: "192.168.204.24"
+        nextcloud_user:
+          type: string
+          example: root
+        active_jobs:
+          type: integer
+          description: Nombre de jobs APScheduler actifs
+          example: 3
+        syncs_today:
+          type: integer
+          description: Nombre total de syncs effectuées aujourd'hui
+          example: 12
+        errors_today:
+          type: integer
+          description: Nombre de syncs en erreur aujourd'hui
+          example: 0
+        timestamp:
+          type: string
+          format: date-time
+          example: "2025-05-30T14:00:00"
+
+    NextcloudBrowseResponse:
+      type: object
+      properties:
+        path:
+          type: string
+          description: Chemin courant exploré
+          example: /documents/rh
+        parent:
+          type: string
+          nullable: true
+          description: Chemin du dossier parent (null si on est à la racine `/`)
+          example: /documents
+        directories:
+          type: array
+          items:
+            type: string
+          description: Sous-dossiers présents à ce niveau
+          example: ["contrats", "fiches-paie"]
+        files:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                example: "politique-rh.pdf"
+              size:
+                type: integer
+                description: Taille en octets
+                example: 245760
+        file_count:
+          type: integer
+          example: 7
+
+    SyncHistoryRecord:
+      type: object
+      properties:
+        mapping_id:
+          type: string
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        started_at:
+          type: string
+          format: date-time
+          example: "2025-05-30T14:22:55"
+        finished_at:
+          type: string
+          format: date-time
+          example: "2025-05-30T14:23:05"
+        status:
+          type: string
+          enum: [ok, error]
+        new:
+          type: integer
+          example: 3
+        modified:
+          type: integer
+          example: 1
+        deleted:
+          type: integer
+          example: 0
+        errors:
+          type: integer
+          example: 0
+        error_message:
+          type: string
+          nullable: true
+
+    ChunkCountResponse:
+      type: object
+      properties:
+        mapping_id:
+          type: string
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        chunk_count:
+          type: integer
+          description: Nombre de chunks indexés dans Qdrant pour ce mapping
+          example: 142
+
+    ErrorResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+          description: Message d'erreur humainement lisible
+          example: "Mapping introuvable"
+
+  responses:
+    NotFound:
+      description: Ressource introuvable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            detail: "Mapping introuvable"
+
+    Conflict:
+      description: Conflit — sync en cours ou doublon label/collection
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            detail: "Une sync est en cours — attendez qu'elle se termine"
+
+    InternalError:
+      description: Erreur interne serveur
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            detail: "Erreur interne du RAG Haystack: connection refused"
+
+# ─────────────────────────────────────────────
+#  PATHS
+# ─────────────────────────────────────────────
+paths:
+
+  # ══════════════════════════════════════════
+  #  API PRINCIPALE — PORT 8000
+  # ══════════════════════════════════════════
+
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check complet
+      description: |
+        Effectue un ping réel sur Qdrant et Ollama.
+
+        - Qdrant : `GET {qdrant_url}/healthz` + comptage des documents de la collection par défaut.
+        - Ollama : `GET {ollama_host}` (endpoint racine).
+
+        Le statut global passe à `degraded` si l'une des deux dépendances est KO.
+        Utile pour les sondes de liveness/readiness Docker ou un reverse proxy.
+      operationId: health_check
+      responses:
+        '200':
+          description: Statut des dépendances (peut être `degraded` avec un HTTP 200)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                ok:
+                  summary: Tout fonctionne
+                  value:
+                    status: ok
+                    timestamp: 1718000000
+                    client_id: client_demo
+                    collection: documents_client_demo
+                    dependencies:
+                      qdrant:
+                        status: ok
+                        documents: 1240
+                      ollama:
+                        status: ok
+                        model: qwen2.5:14b
+                degraded:
+                  summary: Ollama injoignable
+                  value:
+                    status: degraded
+                    timestamp: 1718000000
+                    client_id: client_demo
+                    collection: documents_client_demo
+                    dependencies:
+                      qdrant:
+                        status: ok
+                        documents: 1240
+                      ollama:
+                        status: error
+                        detail: "Connection refused"
+
+  /v1/models:
+    get:
+      tags: [Query]
+      summary: Liste des collections disponibles (format OpenAI)
+      description: |
+        Retourne les collections Qdrant connues au format `{ object: "list", data: [...] }`
+        compatible avec l'API OpenAI `/v1/models`.
+
+        **Open WebUI** appelle cet endpoint pour peupler le sélecteur de modèles.
+        Chaque collection apparaît comme un "modèle" dont l'`id` est le nom de la collection.
+
+        La liste est synchronisée depuis Qdrant au démarrage de l'API (lifespan).
+        Si aucune collection n'existe, retourne la collection par défaut (`settings.default_collection`).
+      operationId: list_models
+      responses:
+        '200':
+          description: Liste des collections/modèles disponibles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object:
+                    type: string
+                    example: list
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ModelObject'
+              example:
+                object: list
+                data:
+                  - id: documents_client_demo
+                    object: model
+                    created: 1718000000
+                    owned_by: pc4u
+                  - id: documents_rh
+                    object: model
+                    created: 1718000000
+                    owned_by: pc4u
+
+  /v1/chat/completions:
+    post:
+      tags: [Query]
+      summary: Requête RAG — compatible OpenAI chat completions
+      description: |
+        Point d'entrée principal du RAG. Compatible avec tout client OpenAI
+        (Open WebUI, LangChain, curl, etc.).
+
+        ### Logique de routage interne
+
+        Avant d'exécuter le pipeline RAG, la route applique des règles de routage
+        sur le contenu du dernier message utilisateur :
+
+        | Mots-clés détectés | Comportement |
+        |---|---|
+        | `ingér`, `ingest`, `indexer` | Retourne une invitation à utiliser le bouton d'ingestion (SVG inline) |
+        | `dashboard` | Retourne un lien HTML cliquable vers `http://192.168.204.23:8001/` |
+        | *(aucun)* | Exécute le pipeline RAG Haystack sur la collection cible |
+
+        ### Pipeline RAG (cas normal)
+        1. Embedding hybride dense (`bge-m3` via Ollama) + sparse (BM42/FastEmbed)
+        2. Retrieval Qdrant (hybrid search)
+        3. Reranking
+        4. Construction du prompt
+        5. Génération via `qwen2.5:14b` (Ollama)
+
+        ### Sélection de la collection
+        La collection est déterminée par le champ `model` de la requête.
+        Si la collection n'existe pas dans `settings.List_collection`,
+        l'API bascule silencieusement sur `settings.default_collection`.
+
+        ### Header optionnel
+        `X-Collection` : permet de forcer la collection indépendamment du champ `model`
+        (non implémenté dans la version actuelle — préparation future).
+
+        ### Mode streaming
+        Avec `stream: true`, la réponse est un flux SSE. Chaque événement contient
+        un chunk au format `chat.completion.chunk`. Le flux se termine par `data: [DONE]`.
+      operationId: chat_completions
+      parameters:
+        - in: header
+          name: X-Collection
+          schema:
+            type: string
+          required: false
+          description: |
+            Forçage de la collection Qdrant (override du champ `model`).
+            Non encore implémenté — prévu pour une version future.
+          example: documents_rh
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+            examples:
+              simple:
+                summary: Question simple (non-streaming)
+                value:
+                  model: documents_client_demo
+                  messages:
+                    - role: user
+                      content: "Comment configurer le VPN sur Windows ?"
+                  stream: false
+              streaming:
+                summary: Même question en streaming
+                value:
+                  model: documents_client_demo
+                  messages:
+                    - role: user
+                      content: "Comment configurer le VPN sur Windows ?"
+                  stream: true
+              dashboard_keyword:
+                summary: Déclenchement du lien dashboard
+                value:
+                  model: documents_client_demo
+                  messages:
+                    - role: user
+                      content: "Ouvre le dashboard"
+                  stream: false
+      responses:
+        '200':
+          description: |
+            Réponse du RAG.
+            - Mode normal : objet `ChatCompletionResponse`.
+            - Mode streaming : flux SSE de chunks `ChatCompletionChunk`, terminé par `data: [DONE]`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+              example:
+                id: chatcmpl-rag-pc4u
+                object: chat.completion
+                created: 1718000000
+                model: documents_client_demo
+                choices:
+                  - index: 0
+                    message:
+                      role: assistant
+                      content: "Pour configurer le VPN sur Windows, rendez-vous dans Paramètres → Réseau..."
+                    finish_reason: stop
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionChunk'
+              example: |
+                data: {"id":"chatcmpl-rag-pc4u-stream","object":"chat.completion.chunk","created":1718000000,"model":"documents_client_demo","choices":[{"index":0,"delta":{"content":"Pour"},"finish_reason":null}]}
+
+                data: {"id":"chatcmpl-rag-pc4u-stream","object":"chat.completion.chunk","created":1718000000,"model":"documents_client_demo","choices":[{"index":0,"delta":{"content":" configurer"},"finish_reason":null}]}
+
+                data: {"id":"chatcmpl-rag-pc4u-stream","object":"chat.completion.chunk","created":1718000000,"model":"documents_client_demo","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+                data: [DONE]
+        '400':
+          description: Aucun message utilisateur dans la requête
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                detail: "Aucun message utilisateur trouvé."
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ══════════════════════════════════════════
+  #  DASHBOARD — PORT 8001
+  # ══════════════════════════════════════════
+
+  /api/status:
+    get:
+      tags: [Infos]
+      summary: Statut global du Dashboard
+      description: |
+        Retourne l'état de la connexion Nextcloud (test WebDAV réel),
+        le nombre de jobs actifs et les compteurs de syncs du jour.
+      operationId: dashboard_status
+      responses:
+        '200':
+          description: Statut du dashboard
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardStatus'
+              example:
+                status: ok
+                nextcloud_connected: true
+                nextcloud_url: "192.168.204.24"
+                nextcloud_user: root
+                active_jobs: 3
+                syncs_today: 12
+                errors_today: 0
+                timestamp: "2025-05-30T14:00:00"
+
+  /api/mappings:
+    get:
+      tags: [Mappings]
+      summary: Liste tous les mappings
+      description: |
+        Retourne tous les mappings avec leur statut **live** :
+        - `in_progress` : une sync est actuellement en cours
+        - `next_run` : prochaine exécution planifiée (fournie par APScheduler en temps réel)
+      operationId: list_mappings
+      responses:
+        '200':
+          description: Liste des mappings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MappingObject'
+
+    post:
+      tags: [Mappings]
+      summary: Créer un nouveau mapping
+      description: |
+        Crée un mapping Nextcloud → Collection Qdrant et enregistre un job APScheduler.
+
+        **Règles de validation :**
+        - Le `label` doit être unique (si fourni) — retourne 409 sinon.
+        - La `collection_name` doit être unique parmi les mappings existants — retourne 409 sinon.
+        - `remote_paths` doit contenir au moins un chemin.
+
+        **Comportement post-création :**
+        - Si `start_at` est fourni : la première sync est planifiée à cette date.
+        - Sinon : une première sync est déclenchée immédiatement en arrière-plan
+          (via `BackgroundTasks`).
+      operationId: create_mapping
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MappingCreate'
+            examples:
+              single_path:
+                summary: Mapping simple (un seul dossier)
+                value:
+                  remote_paths: ["/documents/rh"]
+                  collection_name: documents_rh
+                  interval_minutes: 60
+                  label: "Ressources Humaines"
+              multi_path:
+                summary: Mapping multi-chemins
+                value:
+                  remote_paths: ["/documents/rh", "/documents/juridique"]
+                  collection_name: documents_corp
+                  interval_minutes: 1440
+                  label: "RH + Juridique (quotidien)"
+              scheduled:
+                summary: Première sync planifiée
+                value:
+                  remote_paths: ["/documents/technique"]
+                  collection_name: documents_tech
+                  interval_minutes: 720
+                  label: "Documentation technique"
+                  start_at: "2025-06-01T08:00:00"
+      responses:
+        '201':
+          description: Mapping créé
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MappingObject'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/mappings/search:
+    get:
+      tags: [Mappings]
+      summary: Recherche de mappings par label ou collection
+      description: |
+        Filtre les mappings existants.
+        - `label` : recherche par sous-chaîne (insensible à la casse).
+        - `collection` : correspondance exacte du nom de collection.
+        - Les deux filtres sont **cumulatifs** (ET logique).
+        - Sans paramètre : retourne tous les mappings.
+      operationId: search_mappings
+      parameters:
+        - in: query
+          name: label
+          schema:
+            type: string
+          required: false
+          description: Sous-chaîne du libellé (insensible à la casse)
+          example: "RH"
+        - in: query
+          name: collection
+          schema:
+            type: string
+          required: false
+          description: Nom exact de la collection Qdrant
+          example: documents_rh
+      responses:
+        '200':
+          description: Mappings correspondants aux filtres
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MappingObject'
+
+  /api/mappings/{mapping_id}:
+    put:
+      tags: [Mappings]
+      summary: Modifier un mapping existant
+      description: |
+        Met à jour un ou plusieurs champs d'un mapping.
+        Seuls les champs fournis (non-null) sont modifiés.
+
+        **Contraintes :**
+        - Bloque avec 409 si une sync est en cours sur ce mapping.
+        - Le job APScheduler est **reconstruit** après modification pour que tout
+          changement d'intervalle ou de `start_at` soit immédiatement effectif.
+        - L'unicité de `label` et `collection_name` est vérifiée (409 si conflit).
+      operationId: update_mapping
+      parameters:
+        - in: path
+          name: mapping_id
+          required: true
+          schema:
+            type: string
+          description: UUID du mapping
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MappingUpdate'
+            example:
+              interval_minutes: 30
+              label: "RH — toutes les 30 min"
+      responses:
+        '200':
+          description: Mapping mis à jour
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MappingObject'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+    delete:
+      tags: [Mappings]
+      summary: Supprimer un mapping
+      description: |
+        Supprime un mapping et son job APScheduler.
+
+        **Pré-requis :**
+        - Aucune sync ne doit être en cours (409 sinon).
+        - **La collection Qdrant doit être vide** — si des chunks sont encore indexés,
+          retourne 409 avec le nombre de chunks. Utilisez d'abord
+          `POST /api/mappings/{id}/deindex` pour désindexer.
+
+        **Actions effectuées à la suppression :**
+        1. Arrêt du job APScheduler.
+        2. Nettoyage du cache Nextcloud local (`nextcloud_cache/{collection_name}/`).
+        3. Suppression des fichiers d'état ETag WebDAV (`.nextcloud_etag_*.json`).
+        4. Suppression du fichier d'état d'ingestion (`.ingestion_state_{collection}.json`).
+      operationId: delete_mapping
+      parameters:
+        - in: path
+          name: mapping_id
+          required: true
+          schema:
+            type: string
+          description: UUID du mapping
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      responses:
+        '200':
+          description: Mapping supprimé
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: string
+                    description: UUID du mapping supprimé
+                    example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: |
+            Conflit — sync en cours OU chunks encore indexés dans Qdrant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                sync_in_progress:
+                  value:
+                    detail: "Une sync est en cours — attendez qu'elle se termine"
+                chunks_remaining:
+                  value:
+                    detail: "Ce mapping contient encore 142 chunk(s) indexé(s) dans Qdrant. Utilisez « Désindexer tout » avant de supprimer."
+
+  /api/mappings/{mapping_id}/deindex:
+    post:
+      tags: [Désindexation]
+      summary: Désindexer toute la collection (workflow de suppression propre)
+      description: |
+        Workflow complet de suppression d'un mapping et de toutes ses données :
+
+        1. Supprime tous les chunks Qdrant de la collection associée.
+        2. Supprime physiquement la collection Qdrant (drop).
+        3. Supprime le mapping du dashboard.
+        4. Nettoie le cache local (même logique que `DELETE /api/mappings/{id}`).
+
+        L'opération est **lancée en arrière-plan** (non bloquante).
+        Surveillez l'avancement via SSE (`GET /api/events`) ou
+        en interrogeant `GET /api/mappings/{id}/chunks`.
+
+        **Cas d'usage typique :** avant de supprimer un mapping
+        (`DELETE /api/mappings/{id}`) qui contient encore des données.
+      operationId: deindex_mapping
+      parameters:
+        - in: path
+          name: mapping_id
+          required: true
+          schema:
+            type: string
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      responses:
+        '200':
+          description: Désindexation démarrée en arrière-plan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResponse'
+              example:
+                status: started
+                mapping_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/mappings/{mapping_id}/deindex-file:
+    post:
+      tags: [Désindexation]
+      summary: Désindexer un fichier individuel
+      description: |
+        Supprime les chunks Qdrant d'un fichier spécifique (filtre `meta.file_path`)
+        et efface le fichier du cache local.
+
+        Met également à jour l'état d'ingestion local pour **forcer la redétection**
+        du fichier au prochain cycle de sync (si le fichier réapparaît côté Nextcloud).
+
+        **Important :** `local_path` doit être le chemin **absolu local** dans le cache
+        (répertoire `nextcloud_cache/`), pas le chemin distant Nextcloud.
+        Le front-end construit ce chemin en combinant la base du cache avec le nom de fichier.
+      operationId: deindex_file
+      parameters:
+        - in: path
+          name: mapping_id
+          required: true
+          schema:
+            type: string
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [local_path]
+              properties:
+                local_path:
+                  type: string
+                  description: Chemin absolu local du fichier dans le cache nextcloud
+                  example: "/app/src/rag_pc4u/dashboard/nextcloud_cache/documents_rh/politique-rh.pdf"
+      responses:
+        '200':
+          description: Désindexation effectuée
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deindexed_chunks:
+                    type: integer
+                    description: Nombre de chunks supprimés de Qdrant
+                    example: 18
+                  local_path:
+                    type: string
+                    example: "/app/src/rag_pc4u/dashboard/nextcloud_cache/documents_rh/politique-rh.pdf"
+        '400':
+          description: Champ `local_path` manquant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                detail: "local_path manquant dans le body"
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/mappings/{mapping_id}/chunks:
+    get:
+      tags: [Désindexation]
+      summary: Compter les chunks indexés pour un mapping
+      description: |
+        Retourne le nombre de chunks présents dans Qdrant pour la collection
+        associée à ce mapping.
+
+        Utilisé par le front-end pour décider si le bouton **Supprimer** doit
+        être actif (0 chunk) ou bloqué (> 0 chunks, désindexation préalable requise).
+      operationId: count_chunks
+      parameters:
+        - in: path
+          name: mapping_id
+          required: true
+          schema:
+            type: string
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      responses:
+        '200':
+          description: Nombre de chunks indexés
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChunkCountResponse'
+              example:
+                mapping_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                chunk_count: 142
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/sync/{mapping_id}:
+    post:
+      tags: [Sync]
+      summary: Déclencher une sync manuelle
+      description: |
+        Lance immédiatement une synchronisation Nextcloud → Qdrant pour le mapping
+        spécifié, **en arrière-plan** (non bloquant).
+
+        Si une sync est déjà en cours, retourne `status: already_running` sans
+        lancer une nouvelle sync (idempotent).
+
+        Pour suivre l'avancement, utilisez le flux SSE `GET /api/events`
+        ou consultez `GET /api/mappings` pour voir `in_progress` et `last_stats`.
+      operationId: trigger_sync
+      parameters:
+        - in: path
+          name: mapping_id
+          required: true
+          schema:
+            type: string
+          description: UUID du mapping à synchroniser
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      responses:
+        '200':
+          description: Sync démarrée ou déjà en cours
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResponse'
+              examples:
+                started:
+                  summary: Sync lancée
+                  value:
+                    status: started
+                    mapping_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                already_running:
+                  summary: Sync déjà en cours
+                  value:
+                    status: already_running
+                    mapping_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/history:
+    get:
+      tags: [Historique]
+      summary: Consulter l'historique des syncs
+      description: |
+        Retourne les derniers enregistrements de synchronisation, triés du plus récent
+        au plus ancien.
+
+        Filtrable par `mapping_id` pour n'afficher que l'historique d'un mapping précis.
+      operationId: sync_history
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 1000
+          required: false
+          description: Nombre maximum d'entrées à retourner
+          example: 20
+        - in: query
+          name: mapping_id
+          schema:
+            type: string
+          required: false
+          description: Filtrer sur un mapping spécifique
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      responses:
+        '200':
+          description: Historique des synchronisations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SyncHistoryRecord'
+
+  /api/nextcloud/browse:
+    get:
+      tags: [Nextcloud]
+      summary: Explorer l'arborescence Nextcloud
+      description: |
+        Explore un dossier Nextcloud via WebDAV et retourne son contenu
+        (sous-dossiers + fichiers avec leur taille).
+
+        Utilisé par le front-end pour proposer un sélecteur de chemins lors
+        de la création d'un mapping, sans avoir à connaître l'arborescence à l'avance.
+
+        **Extensions supportées pour l'indexation :**
+        `.txt`, `.md`, `.pdf`, `.csv`, `.docx`, `.pptx`, `.xlsx`, `.html`,
+        `.jpg`, `.jpeg`, `.png`, `.tiff`, `.json`, `.xml`,
+        `.mp3`, `.wav`, `.m4a`, `.aac`, `.ogg`, `.opus`, `.wma`, `.flac`,
+        `.mp4`, `.mov`
+      operationId: browse_nextcloud
+      parameters:
+        - in: query
+          name: path
+          schema:
+            type: string
+            default: "/"
+          required: false
+          description: Chemin Nextcloud à explorer
+          example: /documents/rh
+      responses:
+        '200':
+          description: Contenu du dossier Nextcloud
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NextcloudBrowseResponse'
+              example:
+                path: /documents/rh
+                parent: /documents
+                directories: ["contrats", "fiches-paie", "formations"]
+                files:
+                  - name: "politique-rh.pdf"
+                    size: 245760
+                  - name: "organigramme.xlsx"
+                    size: 52400
+                file_count: 2
+        '500':
+          description: Erreur de connexion Nextcloud
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                detail: "Erreur Nextcloud : Connection refused"
