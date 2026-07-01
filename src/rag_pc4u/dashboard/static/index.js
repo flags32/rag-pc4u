@@ -347,6 +347,7 @@ async function openModal(mappingId = null) {
 
   const titleEl = document.getElementById('modal-title');
   const btn     = document.getElementById('btn-create');
+  const collEl  = document.getElementById('f-coll');
 
   if (mappingId) {
     const m = S.mappings.find(x => x.id === mappingId);
@@ -359,7 +360,13 @@ async function openModal(mappingId = null) {
     /* Point 2 — rétrocompatibilité : remote_paths liste OU remote_path string */
     S.selPaths = [...(m.remote_paths || (m.remote_path ? [m.remote_path] : []))];
 
-    document.getElementById('f-coll').value    = m.collection_name;
+    collEl.value    = m.collection_name;
+    collEl.readOnly = true;
+    collEl.title    = 'Le nom de collection ne peut pas être modifié après création';
+    collEl.style.opacity = '0.6';
+    collEl.style.cursor  = 'not-allowed';
+
+    /* document.getElementById('f-coll').value    = m.collection_name; */
     document.getElementById('f-label').value   = m.label || '';
     document.getElementById('f-start-at').value = m.start_at || '';
 
@@ -371,7 +378,14 @@ async function openModal(mappingId = null) {
   } else {
     titleEl.textContent = 'Nouveau mapping Nextcloud → RAG';
     btn.textContent     = 'Créer le mapping →';
-    document.getElementById('f-coll').value     = '';
+
+    collEl.value    = '';
+    collEl.readOnly = false;
+    collEl.title    = '';
+    collEl.style.opacity = '';
+    collEl.style.cursor  = '';
+
+    /* document.getElementById('f-coll').value     = ''; */
     document.getElementById('f-label').value    = '';
     document.getElementById('f-start-at').value = '';
     browse('/');
@@ -388,8 +402,15 @@ async function openModal(mappingId = null) {
 
 function closeModal() {
   document.getElementById('modal').classList.remove('is-open');
+  // Réinitialiser le champ collection pour la prochaine ouverture en mode création
+  const collEl = document.getElementById('f-coll');
+  collEl.readOnly      = false;
+  collEl.title         = '';
+  collEl.style.opacity = '';
+  collEl.style.cursor  = '';
   S.editingId = null;
   S.selPaths  = [];
+
 }
 function overlayClick(e) { if (e.target.id === 'modal') closeModal(); }
 
