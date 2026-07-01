@@ -120,7 +120,12 @@ class SyncScheduler:
         """
         job = self._scheduler.get_job(job_id)
         if job:
-            job.modify(next_run_time=datetime.now())
+            # IMPORTANT : utiliser datetime.now(PARIS_TZ) et non datetime.now()
+            # (naive). APScheduler compare les next_run_time en aware ; passer
+            # un datetime naive provoque une TypeError silencieuse selon la
+            # version, et dans tous les cas déclenche une comparaison incorrecte
+            # avec le timezone du scheduler (Europe/Paris).
+            job.modify(next_run_time=datetime.now(PARIS_TZ))
             logger.info("scheduler.triggered_immediately", job_id=job_id)
             return True
         return False

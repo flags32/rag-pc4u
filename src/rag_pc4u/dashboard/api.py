@@ -119,9 +119,14 @@ def _execute_sync(mapping_id: str) -> dict:
         # Rétrocompatibilité : _normalize_mapping dans state.py garantit
         # que même les anciens mappings avec "remote_path" str ont bien
         # un champ "remote_paths" list ici.
+        # CORRECTIF : previous_pending_files force une nouvelle tentative
+        # d'ingestion RAG pour les fichiers restés en échec au cycle
+        # précédent, même si rien n'a changé côté Nextcloud à ce cycle-ci
+        # (cf. docstring de NextcloudWatcher.sync()).
         stats = _watcher.sync(
             remote_paths=mapping["remote_paths"],
             collection_name=mapping["collection_name"],
+            previous_pending_files=mapping.get("pending_files") or [],
         )
     except Exception as e:
         logger.exception("dashboard.sync_unhandled_error", mapping_id=mapping_id)
@@ -144,16 +149,31 @@ def _execute_sync(mapping_id: str) -> dict:
 
 def _cleanup_mapping_cache(mapping: dict) -> None:
     """
-    Point 8 — Nettoyage du cache Nextcloud local lors de la suppression
-    d'un mapping. Supprime le dossier de cache et les fichiers d'état
-    WebDAV (.nextcloud_etag_*.json) associés à ce mapping.
+    Nettoyage du cache Nextcloud local lors de la suppression d'un mapping.
+
+    Supprime :
+      1. Le dossier de cache des fichiers téléchargés
+         (nextcloud_cache/<collection>/)
+      2. Les fichiers d'état ETag WebDAV par chemin distant
+         (fichier_injecter/.nextcloud_etag_<path>.json)
+      3. Le fichier d'état d'ingestion run.py
+         (fichier_injecter/.ingestion_state_<collection>.json)
+
+    Ancrage sur ingestion_dir : tous les fichiers sont créés par
+    nextcloud_watcher.py et run.py via Path(__file__).parent (= ingestion/).
+    On ne peut pas utiliser Path(__file__).parent ici car api.py n'est pas
+    dans le même dossier — on remonte jusqu'à la racine du package et on
+    redescend dans ingestion/.
     """
     collection_name = mapping.get("collection_name")
     remote_paths = mapping.get("remote_paths", [])
 
-    # 1. Cache local des fichiers téléchargés
+    # Racine commune à tous les fichiers créés par les modules ingestion
+    ingestion_dir = Path(__file__).parent.parent / "ingestion"
+
+    # 1. Cache local des fichiers téléchargés depuis Nextcloud
     if collection_name:
-        cache_dir = Path(__file__).parent / "nextcloud_cache" / collection_name
+        cache_dir = ingestion_dir / "nextcloud_cache" / collection_name
         if cache_dir.exists():
             try:
                 shutil.rmtree(cache_dir)
@@ -169,29 +189,44 @@ def _cleanup_mapping_cache(mapping: dict) -> None:
                     error=str(e),
                 )
 
-    # 2. Fichiers d'état ETags WebDAV par chemin distant
-    state_base = Path(__file__).parent / "fichier_injecter"
+    # 2. Fichiers d'état ETag WebDAV (un fichier par chemin distant)
+    state_base = ingestion_dir / "fichier_injecter"
     for remote_path in remote_paths:
-        safe = remote_path.replace("/", "_").replace(":", "_").replace(" ", "_").strip("_")
+        safe = (
+            remote_path
+            .replace("/", "_")
+            .replace(":", "_")
+            .replace(" ", "_")
+            .strip("_")
+        )
         etag_file = state_base / f".nextcloud_etag_{safe}.json"
         if etag_file.exists():
             try:
                 etag_file.unlink()
                 logger.info("dashboard.etag_cleaned", path=str(etag_file))
             except Exception as e:
-                logger.warning("dashboard.etag_cleanup_failed", path=str(etag_file), error=str(e))
+                logger.warning(
+                    "dashboard.etag_cleanup_failed",
+                    path=str(etag_file),
+                    error=str(e),
+                )
 
-    # 3. Fichier d'état d'ingestion run.py
+    # 3. Fichier d'état d'ingestion (hash SHA-256 par fichier local)
     if collection_name:
-        safe_coll = collection_name.replace("/", "_").replace(":", "_").replace(" ", "_")
-        ingestion_state = (
-            Path(__file__).parent.parent / "ingestion" /
-            f"fichier_injecter/.ingestion_state_{safe_coll}.json"
+        safe_coll = (
+            collection_name
+            .replace("/", "_")
+            .replace(":", "_")
+            .replace(" ", "_")
         )
+        ingestion_state = state_base / f".ingestion_state_{safe_coll}.json"
         if ingestion_state.exists():
             try:
                 ingestion_state.unlink()
-                logger.info("dashboard.ingestion_state_cleaned", path=str(ingestion_state))
+                logger.info(
+                    "dashboard.ingestion_state_cleaned",
+                    path=str(ingestion_state),
+                )
             except Exception as e:
                 logger.warning(
                     "dashboard.ingestion_state_cleanup_failed",

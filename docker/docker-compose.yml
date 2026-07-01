@@ -64,6 +64,9 @@ services:
       - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/docling_cache:/root/.cache/docling_cache"
       # Persistance des mappings et de l'historique des syncs entre restarts
       - "/root/ramcn/rag-pc4u/src/rag_pc4u/dashboard/mapping:src/rag_pc4u/dashboard/mapping"
+      - "/root/ramcn/rag-pc4u/src/rag_pc4u/ingestion/fichier_injecter:/app/src/rag_pc4u/ingestion/fichier_injecter"
+      # Persistance du cache des fichiers téléchargés depuis Nextcloud
+      - "/root/ramcn/rag-pc4u/src/rag_pc4u/ingestion/nextcloud_cache:/app/src/rag_pc4u/ingestion/nextcloud_cache"
     command: ["uv", "run", "python", "-m", "rag_pc4u.dashboard.run_dashboard"]
     restart: unless-stopped
     depends_on:
