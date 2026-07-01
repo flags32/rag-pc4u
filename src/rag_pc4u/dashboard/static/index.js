@@ -608,6 +608,8 @@ async function createMapping() {
 
   if (!S.selPaths.length) { toast('Ajoutez au moins un chemin Nextcloud', 'error'); return; }
   if (!coll)               { toast('Entrez un nom de collection RAG', 'error');       return; }
+  if (coll.length > 50)    { toast('Le nom de collection ne peut pas dépasser 50 caractères', 'error'); return; }
+  if (label.length > 200)  { toast('Le libellé ne peut pas dépasser 200 caractères', 'error');          return; }
 
   const btn = document.getElementById('btn-create');
   btn.disabled    = true;
