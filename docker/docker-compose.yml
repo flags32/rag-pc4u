@@ -1,5 +1,5 @@
 services:
-  # 1. API principale (Interface de Chat / Haystack)
+  # 1. API principale (Interface de Chat / Haystack / Reranker CPU)
   api:
     build:
       context: ..
@@ -11,10 +11,10 @@ services:
       - ../.env
     environment:
       TZ: "Europe/Paris"
-      # --- BRIDAGE CPU (Prévention du Thread Thrashing) ---
-      OMP_NUM_THREADS: "4"
-      MKL_NUM_THREADS: "4"
-      OPENBLAS_NUM_THREADS: "4"
+      # --- OPTIMISATION CPU (Sweet spot pour le Reranker BGE sur CPU) ---
+      OMP_NUM_THREADS: "12"
+      MKL_NUM_THREADS: "12"
+      OPENBLAS_NUM_THREADS: "12"
       # ----------------------------------------------------
       HF_HUB_OFFLINE: "1"
       HF_HOME: "/root/.cache/hf_cache"
@@ -27,9 +27,14 @@ services:
     volumes:
       - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/hf_cache:/root/.cache/hf_cache"
       - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/fastembed_cache:/root/.cache/fastembed_cache"
+    deploy:
+      resources:
+        limits:
+          cpus: "16" # Allocation de 16 cœurs physiques max (12 pour le Reranker + 4 de marge pour requêtes simultanées)
+          memory: "15G" # Large marge de sécurité en RAM
     restart: unless-stopped
 
-  # 2. Dashboard de synchronisation Nextcloud
+  # 2. Dashboard de synchronisation Nextcloud & Ingestion (Docling / Extraction PDF)
   dashboard:
     build:
       context: ..
@@ -41,16 +46,15 @@ services:
       - ../.env
     environment:
       TZ: "Europe/Paris"
-      # --- BRIDAGE CPU (Prévention du Thread Thrashing pour Docling OCR) ---
-      OMP_NUM_THREADS: "4"
-      MKL_NUM_THREADS: "4"
-      OPENBLAS_NUM_THREADS: "4"
- 
+      # --- OPTIMISATION CPU (Pour l'analyse de documents en tâche de fond) ---
+      OMP_NUM_THREADS: "6"
+      MKL_NUM_THREADS: "6"
+      OPENBLAS_NUM_THREADS: "6"
+
       HF_HUB_OFFLINE: "1"
       HF_HOME: "/root/.cache/hf_cache"
       FASTEMBED_CACHE_PATH: "/root/.cache/fastembed_cache"
       # Docling charge ses propres modèles (ds4sd/docling-models) via ce chemin.
-      # Distinct de HF_HOME — obligatoire pour le pipeline d'indexation PDF.
       DOCLING_ARTIFACTS_PATH: "/root/.cache/docling_cache"
       OLLAMA_HOST: "http://192.168.204.21:11434"
       OLLAMA_EMBED_MODEL: "bge-m3:latest"
@@ -68,21 +72,31 @@ services:
       # Persistance du cache des fichiers téléchargés depuis Nextcloud
       - "/root/ramcn/rag-pc4u/src/rag_pc4u/ingestion/nextcloud_cache:/app/src/rag_pc4u/ingestion/nextcloud_cache"
     command: ["uv", "run", "python", "-m", "rag_pc4u.dashboard.run_dashboard"]
+    deploy:
+      resources:
+        limits:
+          cpus: "24" # Permet de paralléliser jusqu'à 4 fichiers en même temps (4 workers x 6 threads)
+          memory: "30G" # Protection contre les pics de RAM lors de l'extraction de très gros PDF/tableaux
     restart: unless-stopped
     depends_on:
       - api
 
-  # 3. Serveur Whisper optimisé pour le RAG
+  # 3. Serveur Whisper optimisé pour le RAG (Traitement Audio CPU)
   whisper:
-      image: fedirz/faster-whisper-server:latest-cpu
-      container_name: rag-whisper
-      ports:
-        - "8002:8000"  # <-- CORRECTION : Écoute sur 8000 à l'intérieur, exposé sur 8002 à l'extérieur
-      environment:
-        - WHISPER_MODEL=large-v3
-        - WHISPER_COMPUTE__TYPE=int8_float32
-        - WHISPER_CPU_THREADS=8
-        - WHISPER_NUM_WORKERS=1
-      volumes:
-        - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/whisper:/root/.cache/whisper"
-      restart: unless-stopped
+    image: fedirz/faster-whisper-server:latest-cpu
+    container_name: rag-whisper
+    ports:
+      - "8002:8000"
+    environment:
+      WHISPER_MODEL: "large-v3"
+      WHISPER_COMPUTE__TYPE: "int8_float32" # Idéal pour de la performance pure sur CPU
+      WHISPER_CPU_THREADS: "8" # Whisper utilisera activement 8 threads pour transcrire
+      WHISPER_NUM_WORKERS: "1" # FIle d'attente FIFO stricte (1 seul audio traité à la fois)
+    volumes:
+      - "/root/ramcn/rag-pc4u/src/rag_pc4u/scripts/models_cache/whisper:/root/.cache/whisper"
+    deploy:
+      resources:
+        limits:
+          cpus: "8" # Bridage strict à 8 cœurs physiques
+          memory: "10G"
+    restart: unless-stopped

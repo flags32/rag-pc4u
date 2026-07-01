@@ -182,29 +182,7 @@ async def chat_completions(
         dashboard_url = "http://192.168.204.23:8001/"
 
         artifact_response = (
-            f"Voici le lien vers votre panneau de gestion des synchronisations Nextcloud :\n\n"
-            f"🔗 **[Ouvrir le dashboard Nextcloud → RAG]({dashboard_url})**\n\n"
-            f"Vous pouvez également cliquer sur le bouton ci-dessous pour l'ouvrir dans un nouvel onglet.\n\n"
-            "```html\n"
-            f'<!DOCTYPE html><html><head><meta charset="UTF-8">'
-            f'<style>'
-            f'body{{margin:0;display:flex;align-items:center;justify-content:center;'
-            f'min-height:100vh;background:#07090f;font-family:Outfit,sans-serif;}}'
-            f'.card{{background:#101520;border:1px solid #1c2535;border-radius:12px;'
-            f'padding:2.5rem 3rem;text-align:center;max-width:420px;}}'
-            f'h2{{color:#e8eef8;margin-bottom:.5rem;font-size:1.3rem;}}'
-            f'p{{color:#8a9ab8;font-size:.9rem;margin-bottom:1.8rem;}}'
-            f'a{{display:inline-block;background:#00e5c3;color:#07090f;'
-            f'font-weight:700;padding:.85rem 2rem;border-radius:8px;'
-            f'text-decoration:none;font-size:1rem;letter-spacing:.02em;}}'
-            f'a:hover{{background:#00c9aa;}}'
-            f'</style></head><body>'
-            f'<div class="card">'
-            f'<h2>⬡ RAG PC4U — Sync Dashboard</h2>'
-            f'<p>Panneau de gestion des synchronisations Nextcloud → Collections RAG</p>'
-            f'<a href="http://192.168.204.23:8001/">Ouvrir le Dashboard →</a>'
-            f'</div></body></html>\n'
-            "```"
+            f"🔗 **[Ouvrir le dashboard Nextcloud → RAG]({dashboard_url})**"
         )
 
         return ChatCompletionResponse(

@@ -31,16 +31,22 @@ class DocumentExposer:
 
 
 @lru_cache(maxsize=16)
-def build_hybrid_rag_pipeline(collection_name: str) -> Pipeline:
+def build_hybrid_rag_pipeline(collection_name: str, with_llm: bool = True) -> Pipeline:
     """
     Assemble le pipeline RAG hybride pour une collection donnée.
 
     Le décorateur @lru_cache garantit qu'une seule instance de pipeline est
-    créée par collection_name, puis réutilisée pour toutes les requêtes.
+    créée par (collection_name, with_llm), puis réutilisée pour toutes les requêtes.
     C'est services.py qui appelle cette fonction — pas la route HTTP.
 
     Args:
         collection_name : Nom de la collection Qdrant à interroger.
+        with_llm : Si False, le composant "llm" n'est ni créé ni connecté.
+                   Utilisé pour le chemin streaming (answer_stream), où le LLM
+                   est appelé séparément avec son propre streaming_callback.
+                   Sans ça, Haystack exécute quand même "llm" dès que
+                   prompt_builder.prompt est disponible, même si on ne demande
+                   pas sa sortie -> double génération inutile (~2x la latence).
     """
     ds = get_document_store(collection_name)
     pipeline = Pipeline()
@@ -65,11 +71,12 @@ def build_hybrid_rag_pipeline(collection_name: str) -> Pipeline:
             required_variables=["documents", "query"],
         ),
     )
-    pipeline.add_component("llm", OllamaGenerator(
-        url=settings.ollama_host,
-        model=settings.ollama_llm_model,
-        system_prompt=RAG_SYSTEM_PROMPT,
-    ))
+    if with_llm:
+        pipeline.add_component("llm", OllamaGenerator(
+            url=settings.ollama_host,
+            model=settings.ollama_llm_model,
+            system_prompt=RAG_SYSTEM_PROMPT,
+        ))
 
     # Connexions
     pipeline.connect("dense_embedder.embedding", "hybrid_retriever.query_embedding")
@@ -77,6 +84,7 @@ def build_hybrid_rag_pipeline(collection_name: str) -> Pipeline:
     pipeline.connect("hybrid_retriever.documents", "ranker.documents")
     pipeline.connect("ranker.documents", "document_exposer.documents")
     pipeline.connect("ranker.documents", "prompt_builder.documents")
-    pipeline.connect("prompt_builder.prompt", "llm.prompt")
+    if with_llm:
+        pipeline.connect("prompt_builder.prompt", "llm.prompt")
 
     return pipeline

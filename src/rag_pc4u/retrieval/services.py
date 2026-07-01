@@ -15,10 +15,13 @@ def _run_retrieval(query: str, collection_name: str):
     Exécute la partie retrieval + reranking du pipeline (sans le LLM).
     Réutilisé par answer() et answer_stream().
     """
-    pipeline = build_hybrid_rag_pipeline(collection_name)
+    # with_llm=False : le composant "llm" n'existe même pas dans ce pipeline,
+    # donc il ne peut pas être exécuté. Avant ce correctif, le pipeline complet
+    # était utilisé et "include_outputs_from" ne faisait que filtrer la sortie
+    # renvoyée -> le LLM tournait quand même une première fois pour rien
+    # (double génération à chaque requête en streaming).
+    pipeline = build_hybrid_rag_pipeline(collection_name, with_llm=False)
 
-    # On exécute le pipeline jusqu'au prompt_builder uniquement,
-    # en excluant "llm" des composants à exécuter.
     results = pipeline.run(
         {
             "dense_embedder": {"text": query},

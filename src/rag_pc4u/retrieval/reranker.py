@@ -15,7 +15,7 @@ class SimpleBGEReranker:
         self,
         model_name: str = "BAAI/bge-reranker-v2-m3",
         top_k: int = 10,
-        score_threshold: float = 0.5,
+        score_threshold: float = 0.2,
     ):
         self.model = CrossEncoder(
             model_name,
