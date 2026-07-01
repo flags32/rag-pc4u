@@ -10,9 +10,72 @@ const S = {
 
 /*  Init  */
 async function init() {
+  /* Délégation d'événements — attachée UNE SEULE FOIS avant le premier
+     rendu. Évite d'injecter des valeurs dynamiques (label, chemin, nom de
+     fichier...) dans des attributs onclick="foo('${val}')".
+
+     Pourquoi ce pattern est indispensable en français :
+     esc() convertit ' en &#39; (entité HTML). Mais le navigateur DÉCODE
+     les entités HTML de l'attribut onclick AVANT de le compiler comme JS.
+     Donc &#39; redevient ' au moment de l'évaluation JS — exactement comme
+     si on n'avait rien échappé. Résultat : tout label/chemin contenant une
+     apostrophe (« Dossier d'archives », « Rapport d'activité.pdf »…) casse
+     silencieusement le handler.
+     Avec data-*, esc() protège l'attribut HTML (pas de rupture de balise),
+     et dataset.* retourne la valeur correctement décodée côté JS. */
+  bindMappingsEvents();
+  bindBrowserEvents();
+  bindBreadcrumbEvents();
+  bindSelPathsEvents();
+
   await Promise.all([loadStatus(), loadMappings(), loadHistory()]);
   startSSE();
   setInterval(() => { loadHistory(); }, 30_000);
+}
+
+/* ── Délégation d'événements ─────────────────────────────────────────── */
+
+function bindMappingsEvents() {
+  document.getElementById('mappings-container').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const { action, id, label } = btn.dataset;
+    if      (action === 'sync')        triggerSync(id);
+    else if (action === 'edit')        openModal(id);
+    else if (action === 'deindex-all') deindexAll(id, label);
+    else if (action === 'delete')      delMapping(id, label);
+    else if (action === 'create')      openModal();
+  });
+}
+
+function bindBrowserEvents() {
+  document.getElementById('browser-list').addEventListener('click', (e) => {
+    const item = e.target.closest('[data-action]');
+    if (!item) return;
+    const { action, path } = item.dataset;
+    if      (action === 'browse')       browse(path);
+    else if (action === 'select-file')  selectFile(path);
+  });
+}
+
+function bindBreadcrumbEvents() {
+  document.getElementById('bc').addEventListener('click', (e) => {
+    const item = e.target.closest('.bc-item[data-path]');
+    if (!item) return;
+    browse(item.dataset.path);
+  });
+}
+
+function bindSelPathsEvents() {
+  document.getElementById('sel-paths-list').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    if (btn.dataset.action === 'deindex-file') {
+      deindexFile(btn.dataset.mappingId, btn.dataset.localPath, btn.dataset.filename);
+    } else if (btn.dataset.action === 'remove-path') {
+      removeSelPath(parseInt(btn.dataset.idx, 10));
+    }
+  });
 }
 
 /*  API helper  */
@@ -57,7 +120,10 @@ async function loadMappings() {
   try {
     const data = await api('/api/mappings');
     S.mappings = data;
-    renderMappings();
+    // filterMappings() et non renderMappings() : si l'utilisateur a tapé une
+    // recherche pendant qu'une sync se terminait en arrière-plan (SSE), on
+    // réapplique son filtre au lieu d'effacer sa saisie et de tout réafficher.
+    filterMappings();
     updateHistFilter();
     setStatVal('s-mappings', data.length);
   } catch (e) { console.error('loadMappings', e); }
@@ -83,7 +149,7 @@ function renderMappings(list = S.mappings) {
         <div class="empty-icon">📡</div>
         <div class="empty-title">${S.mappings.length ? 'Aucun résultat' : 'Aucun mapping configuré'}</div>
         <div class="empty-sub">${S.mappings.length ? 'Modifiez votre recherche' : 'Créez votre premier mapping pour démarrer l\'indexation automatique'}</div>
-        ${S.mappings.length ? '' : '<button class="btn btn-primary" onclick="openModal()">+ Créer un mapping</button>'}
+        ${S.mappings.length ? '' : '<button class="btn btn-primary" data-action="create">+ Créer un mapping</button>'}
       </div>`;
     return;
   }
@@ -148,16 +214,16 @@ function cardHTML(m) {
       </div>
       <div class="card-actions">
         <button class="btn btn-sync btn-sm ${inProg ? 'is-loading' : ''}"
-          onclick="triggerSync('${m.id}')" ${inProg ? 'disabled' : ''}>
+          data-action="sync" data-id="${m.id}" ${inProg ? 'disabled' : ''}>
           <span class="btn-icon">↺</span> ${inProg ? 'En cours…' : 'Sync maintenant'}
         </button>
-        <button class="btn btn-ghost btn-sm" onclick="openModal('${m.id}')">
+        <button class="btn btn-ghost btn-sm" data-action="edit" data-id="${m.id}">
           ✎ Modifier
         </button>
-        <button class="btn btn-warn btn-sm" onclick="deindexAll('${m.id}', '${esc(m.label)}')">
+        <button class="btn btn-warn btn-sm" data-action="deindex-all" data-id="${m.id}" data-label="${esc(m.label)}">
           ⊘ Désindexer tout
         </button>
-        <button class="btn btn-danger btn-sm" onclick="delMapping('${m.id}', '${esc(m.label)}')">
+        <button class="btn btn-danger btn-sm" data-action="delete" data-id="${m.id}" data-label="${esc(m.label)}">
           ✕ Supprimer
         </button>
       </div>
@@ -429,7 +495,10 @@ function renderSelPaths() {
 
     const deindexBtn = isEdit
       ? `<button class="sel-path-deindex" title="Désindexer ce fichier"
-           onclick="deindexFile('${esc(S.editingId)}', '${esc(localPath || p)}', '${esc(fileName)}')">
+           data-action="deindex-file"
+           data-mapping-id="${esc(S.editingId)}"
+           data-local-path="${esc(localPath || p)}"
+           data-filename="${esc(fileName)}">
            ⊘ Désindexer
          </button>`
       : '';
@@ -446,7 +515,7 @@ function renderSelPaths() {
         <span class="sel-path-icon">📁</span>
         <span class="sel-path-text">${esc(p)}</span>
         ${deindexBtn}
-        <button class="sel-path-remove" onclick="removeSelPath(${i})" title="${removeTitle}">✕</button>
+        <button class="sel-path-remove" data-action="remove-path" data-idx="${i}" title="${removeTitle}">✕</button>
       </div>`;
   }).join('');
 }
@@ -467,14 +536,14 @@ async function browse(path) {
 
     /* Point 2 — affiche aussi les fichiers individuels pour pouvoir les sélectionner */
     const dirs = (d.directories || []).map(dir => `
-      <div class="browser-dir" onclick="browse('${esc(dir.path)}')">
+      <div class="browser-dir" data-action="browse" data-path="${esc(dir.path)}">
         <span class="browser-dir-icon">📁</span>
         <span class="browser-dir-name">${esc(dir.name)}</span>
         <span class="browser-dir-arrow">›</span>
       </div>`).join('');
 
     const files = (d.files || []).map(f => `
-      <div class="browser-file" onclick="selectFile('${esc(path + (path.endsWith('/') ? '' : '/') + f.name)}')">
+      <div class="browser-file" data-action="select-file" data-path="${esc(path + (path.endsWith('/') ? '' : '/') + f.name)}">
         <span class="browser-dir-icon">📄</span>
         <span class="browser-dir-name">${esc(f.name)}</span>
         <span class="browser-file-size">${fmtSize(f.size)}</span>
@@ -498,13 +567,13 @@ function selectFile(filePath) {
 function updateBreadcrumb(path) {
   const bc = document.getElementById('bc');
   const parts = path.split('/').filter(Boolean);
-  let items = [`<span class="bc-item" onclick="browse('/')">⌂</span>`];
+  let items = [`<span class="bc-item" data-path="/">⌂</span>`];
   let cur = '';
   parts.forEach(p => {
     cur += '/' + p;
     const c = cur;
     items.push(`<span class="bc-sep">›</span>`);
-    items.push(`<span class="bc-item" onclick="browse('${c}')">${esc(p)}</span>`);
+    items.push(`<span class="bc-item" data-path="${c}">${esc(p)}</span>`);
   });
   bc.innerHTML = items.join('');
 }

@@ -246,9 +246,6 @@ def update_mapping(
             return None
         m = state["mappings"][mapping_id]
 
-        target_label = label if label is not None else m.get("label")
-        target_collection = collection_name if collection_name is not None else m.get("collection_name")
-
         # Contrôles d'unicité (point 1)
         if label is not None and _label_exists(state, label, exclude_id=mapping_id):
             return f"Un mapping actif utilise déjà le libellé « {label} »."

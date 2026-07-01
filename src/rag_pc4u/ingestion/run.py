@@ -206,10 +206,17 @@ def count_indexed_chunks(collection_name: str) -> int:
     Retourne le nombre de chunks actuellement indexés dans une collection.
     Utilisé par api.py pour bloquer la suppression d'un mapping tant que
     des données sont encore présentes dans Qdrant.
+
+    On utilise count_documents() plutôt que len(filter_documents()) :
+    filter_documents() sans filtre charge l'intégralité des documents
+    (contenu + embeddings) en mémoire juste pour compter — provoque des
+    timeouts et une consommation mémoire importante sur les grosses
+    collections. count_documents() délègue le comptage à Qdrant (un seul
+    appel réseau léger, O(1) côté serveur).
     """
     try:
         ds = get_document_store(collection_name)
-        return len(ds.filter_documents())
+        return ds.count_documents()
     except Exception as e:
         logger.error(
             "count_indexed_chunks a échoué — retour 0 par défaut, "
