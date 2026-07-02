@@ -301,12 +301,13 @@ class NextcloudWatcher:
 
     # État WebDAV
 
-    def _state_file(self, remote_path: str) -> Path:
-        safe = remote_path.replace("/", "_").replace(":", "_").replace(" ", "_").strip("_")
-        return self.state_base / f".nextcloud_etag_{safe}.json"
+    # CORRECTIF : Isolation des ETags par collection pour éviter qu'un mapping écrase l'autre
+    def _state_file(self, remote_path: str, collection_name: str) -> Path:
+        safe_path = remote_path.replace("/", "_").replace(":", "_").replace(" ", "_").strip("_")
+        return self.state_base / f".nextcloud_etag_{collection_name}_{safe_path}.json"
 
-    def _load_state(self, remote_path: str) -> dict:
-        f = self._state_file(remote_path)
+    def _load_state(self, remote_path: str, collection_name: str) -> dict:
+        f = self._state_file(remote_path, collection_name)
         if f.exists():
             try:
                 return json.loads(f.read_text(encoding="utf-8"))
@@ -314,8 +315,8 @@ class NextcloudWatcher:
                 logger.warning("nextcloud.state_load_failed", path=str(f))
         return {}
 
-    def _save_state(self, remote_path: str, state: dict) -> None:
-        self._state_file(remote_path).write_text(
+    def _save_state(self, remote_path: str, collection_name: str, state: dict) -> None:
+        self._state_file(remote_path, collection_name).write_text(
             json.dumps(state, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
@@ -374,9 +375,17 @@ class NextcloudWatcher:
         # ensuite à l'indexation (cf. bug stats["new"] jamais décrémenté).
         local_to_category: dict[str, str] = {}
 
+        # CORRECTIF : "Panier" temporaire pour les ETags et historique pour le rollback
+        states_to_save: dict[str, dict] = {}
+        rollback_info: dict[str, dict] = {}
+
         for remote_path in remote_paths:
-            previous_state = self._load_state(remote_path)
+            previous_state = self._load_state(remote_path, collection_name)
             new_state: dict[str, str] = {}
+
+            # CORRECTIF : Préfixe unique pour éviter que deux fichiers de même nom
+            # situés dans des dossiers Nextcloud différents s'écrasent dans le cache
+            safe_prefix = remote_path.replace("/", "_").replace(":", "_").replace(" ", "_").strip("_")
 
             # 1. Résolution du chemin (dossier OU fichier individuel — point 2)
             try:
@@ -385,11 +394,11 @@ class NextcloudWatcher:
                 # Le chemin lui-même n'existe plus donc tous ses fichiers sont supprimés
                 logger.info("nextcloud.path_deleted", path=remote_path)
                 for href in previous_state:
-                    local_path = local_dir / Path(href).name
+                    local_path = local_dir / f"{safe_prefix}__{Path(href).name}"
                     if local_path.exists():
                         local_path.unlink()
                     stats["deleted"] += 1
-                self._save_state(remote_path, {})  # vider l'état
+                states_to_save[remote_path] = {} # On le met en file d'attente pour vider l'état
                 continue
             except Exception as e:
                 logger.error("nextcloud.list_failed", path=remote_path, error=str(e))
@@ -418,7 +427,9 @@ class NextcloudWatcher:
             for file_info in remote_files:
                 href = file_info["href"]
                 etag = file_info["etag"] or file_info["modified"]
-                local_path = local_dir / file_info["name"]
+
+                # CORRECTIF : Utilisation du préfixe anti-collision pour le nom du fichier local
+                local_path = local_dir / f"{safe_prefix}__{file_info['name']}"
                 prev_etag = previous_state.get(href)
 
                 if prev_etag is None:
@@ -427,7 +438,9 @@ class NextcloudWatcher:
                     if ok:
                         stats["new"] += 1
                         new_state[href] = etag
-                        local_to_category[str(local_path.resolve())] = "new"
+                        local_path_str = str(local_path.resolve())
+                        local_to_category[local_path_str] = "new"
+                        rollback_info[local_path_str] = {"remote_path": remote_path, "href": href, "prev_etag": None}
                     else:
                         stats["errors"] += 1
                         # On n'écrit rien dans new_state : le fichier restera
@@ -439,7 +452,9 @@ class NextcloudWatcher:
                     if ok:
                         stats["modified"] += 1
                         new_state[href] = etag
-                        local_to_category[str(local_path.resolve())] = "modified"
+                        local_path_str = str(local_path.resolve())
+                        local_to_category[local_path_str] = "modified"
+                        rollback_info[local_path_str] = {"remote_path": remote_path, "href": href, "prev_etag": prev_etag}
                     else:
                         stats["errors"] += 1
                         # On réécrit l'ANCIEN etag (pas le nouveau) pour que
@@ -454,20 +469,26 @@ class NextcloudWatcher:
             for href in previous_state:
                 if href not in current_hrefs:
                     logger.info("nextcloud.deleted_file", href=href)
-                    local_path = local_dir / Path(href).name
+                    local_path = local_dir / f"{safe_prefix}__{Path(href).name}"
                     if local_path.exists():
                         local_path.unlink()
                     stats["deleted"] += 1
 
-            # État sauvegardé par chemin individuel — plus robuste si la liste
-            # de chemins d'un mapping change entre deux cycles.
-            self._save_state(remote_path, new_state)
+            # On stocke l'état complet de ce chemin dans le panier,
+            # prêt à être sauvegardé si l'ingestion Qdrant se passe bien.
+            states_to_save[remote_path] = new_state
 
         # 4. Ingestion unique sur l'ensemble du cache fusionné
         if stats["new"] or stats["modified"] or stats["deleted"]:
             try:
                 ingestion_result = run_folder_ingestion(str(local_dir), collection_name)
                 stats["pending_files"] = ingestion_result.get("fichiers_en_attente", [])
+
+                # SUCCÈS TOTAL : l'ingestion a fonctionné.
+                # On valide définitivement les ETags en les écrivant sur le disque.
+                for rp, st in states_to_save.items():
+                    self._save_state(rp, collection_name, st)
+
             except IngestionPendingFilesError as e:
                 logger.error(
                     "nextcloud.ingestion_failed",
@@ -483,11 +504,30 @@ class NextcloudWatcher:
                 # fichier en échec (e.pending_files) avec la catégorie sous
                 # laquelle il avait été compté au téléchargement, on la
                 # décrémente, et on l'ajoute à errors.
+
                 for pending_path in e.pending_files:
+                    # 1. Ajustement des statistiques
                     category = local_to_category.pop(pending_path, None)
                     if category is not None and stats[category] > 0:
                         stats[category] -= 1
                     stats["errors"] += 1
+
+                    # 2. Rollback des ETags pour les fichiers en échec d'ingestion
+                    r_info = rollback_info.get(pending_path)
+                    if r_info:
+                        rp = r_info["remote_path"]
+                        href = r_info["href"]
+                        old_etag = r_info["prev_etag"]
+
+                        if old_etag is None:
+                            states_to_save[rp].pop(href, None) # Était nouveau, on l'oublie
+                        else:
+                            states_to_save[rp][href] = old_etag # Était modifié, on annule sa mise à jour
+
+                # On sauvegarde sur le disque le panier "corrigé" (les fichiers qui ont réussi gardent leur ETag validé)
+                for rp, st in states_to_save.items():
+                    self._save_state(rp, collection_name, st)
+
                 stats.update(
                     status="error",
                     error_message=str(e),
@@ -495,8 +535,11 @@ class NextcloudWatcher:
                     pending_files=e.pending_files,
                 )
                 return stats
+
             except Exception as e:
-                logger.error("nextcloud.ingestion_failed", error=str(e))
+                logger.error("nextcloud.ingestion_failed_critique", error=str(e))
+                # ÉCHEC CRITIQUE: l'ingestion a planté violemment sans remonter IngestionPendingFilesError.
+                # Par sécurité absolue, on NE SAUVEGARDE AUCUN ETAG pour forcer une retentative complète au cycle suivant.
                 stats.update(
                     status="error",
                     error_message=str(e),
