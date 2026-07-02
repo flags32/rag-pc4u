@@ -11,3 +11,4 @@ eval/
 dist/
 build/
 *.egg-info/
+src/rag_pc4u/scripts/models_cache/
