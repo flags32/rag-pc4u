@@ -119,14 +119,9 @@ def _execute_sync(mapping_id: str) -> dict:
         # Rétrocompatibilité : _normalize_mapping dans state.py garantit
         # que même les anciens mappings avec "remote_path" str ont bien
         # un champ "remote_paths" list ici.
-        # CORRECTIF : previous_pending_files force une nouvelle tentative
-        # d'ingestion RAG pour les fichiers restés en échec au cycle
-        # précédent, même si rien n'a changé côté Nextcloud à ce cycle-ci
-        # (cf. docstring de NextcloudWatcher.sync()).
         stats = _watcher.sync(
             remote_paths=mapping["remote_paths"],
             collection_name=mapping["collection_name"],
-            previous_pending_files=mapping.get("pending_files") or [],
         )
     except Exception as e:
         logger.exception("dashboard.sync_unhandled_error", mapping_id=mapping_id)
