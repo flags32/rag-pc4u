@@ -368,6 +368,12 @@ class NextcloudWatcher:
 
         had_list_error = False
 
+        # Corrélation fichier local -> catégorie ("new"/"modified") attribuée
+        # lors de la phase de téléchargement. Sert, après l'ingestion, à
+        # corriger les stats si un fichier téléchargé avec succès échoue
+        # ensuite à l'indexation (cf. bug stats["new"] jamais décrémenté).
+        local_to_category: dict[str, str] = {}
+
         for remote_path in remote_paths:
             previous_state = self._load_state(remote_path)
             new_state: dict[str, str] = {}
@@ -396,21 +402,53 @@ class NextcloudWatcher:
             current_hrefs = {f["href"] for f in remote_files}
 
             # 2. Nouveaux / modifiés
+            #
+            # IMPORTANT (fix) : new_state[href] ne doit être écrit QUE si le
+            # téléchargement a réellement réussi. Avant, l'ETag était écrit
+            # inconditionnellement dès le début de la boucle : un téléchargement
+            # en échec (timeout, coupure réseau...) voyait quand même son ETag
+            # persisté dans le fichier .nextcloud_etag_<path>.json. Au cycle
+            # suivant, prev_etag == etag → le fichier était considéré comme
+            # "inchangé" et n'était plus jamais retenté, alors qu'il n'a jamais
+            # été téléchargé/indexé. On corrige en n'écrivant new_state QUE
+            # dans les branches où ok=True (nouveau fichier réussi) ou pour un
+            # fichier inchangé ; en cas d'échec on ne touche pas new_state
+            # (nouveau fichier) ou on réécrit l'ancien etag (fichier modifié),
+            # ce qui force une nouvelle tentative au prochain cycle.
             for file_info in remote_files:
                 href = file_info["href"]
                 etag = file_info["etag"] or file_info["modified"]
-                new_state[href] = etag
                 local_path = local_dir / file_info["name"]
                 prev_etag = previous_state.get(href)
 
                 if prev_etag is None:
                     logger.info("nextcloud.new_file", href=href)
                     ok = self.download_file(href, local_path)
-                    stats["new" if ok else "errors"] += 1
+                    if ok:
+                        stats["new"] += 1
+                        new_state[href] = etag
+                        local_to_category[str(local_path.resolve())] = "new"
+                    else:
+                        stats["errors"] += 1
+                        # On n'écrit rien dans new_state : le fichier restera
+                        # "nouveau" (absent de l'état) et sera retenté au
+                        # prochain cycle.
                 elif prev_etag != etag:
                     logger.info("nextcloud.modified_file", href=href)
                     ok = self.download_file(href, local_path)
-                    stats["modified" if ok else "errors"] += 1
+                    if ok:
+                        stats["modified"] += 1
+                        new_state[href] = etag
+                        local_to_category[str(local_path.resolve())] = "modified"
+                    else:
+                        stats["errors"] += 1
+                        # On réécrit l'ANCIEN etag (pas le nouveau) pour que
+                        # le fichier soit à nouveau détecté comme "modifié"
+                        # et retenté au prochain cycle.
+                        new_state[href] = prev_etag
+                else:
+                    # Fichier inchangé : on reconduit son etag tel quel.
+                    new_state[href] = etag
 
             # 3. Fichiers supprimés distants → supprimer du cache local
             for href in previous_state:
@@ -436,6 +474,20 @@ class NextcloudWatcher:
                     error=str(e),
                     pending_files=e.pending_files,
                 )
+                # FIX : un fichier compté dans stats["new"]/["modified"] lors
+                # du téléchargement peut malgré tout échouer plus tard à
+                # l'étape d'indexation (run_folder_ingestion). Avant ce fix,
+                # ces compteurs n'étaient jamais corrigés : le dashboard
+                # affichait par ex. "3 nouveaux" alors qu'un seul avait
+                # réellement été indexé dans Qdrant. On recorrèle chaque
+                # fichier en échec (e.pending_files) avec la catégorie sous
+                # laquelle il avait été compté au téléchargement, on la
+                # décrémente, et on l'ajoute à errors.
+                for pending_path in e.pending_files:
+                    category = local_to_category.pop(pending_path, None)
+                    if category is not None and stats[category] > 0:
+                        stats[category] -= 1
+                    stats["errors"] += 1
                 stats.update(
                     status="error",
                     error_message=str(e),
