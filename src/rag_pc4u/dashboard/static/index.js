@@ -220,11 +220,8 @@ function cardHTML(m) {
         <button class="btn btn-ghost btn-sm" data-action="edit" data-id="${m.id}">
           ✎ Modifier
         </button>
-        <button class="btn btn-warn btn-sm" data-action="deindex-all" data-id="${m.id}" data-label="${esc(m.label)}">
+        <button class="btn btn-danger btn-sm" data-action="deindex-all" data-id="${m.id}" data-label="${esc(m.label)}">
           ⊘ Désindexer tout
-        </button>
-        <button class="btn btn-danger btn-sm" data-action="delete" data-id="${m.id}" data-label="${esc(m.label)}">
-          ✕ Supprimer
         </button>
       </div>
     </div>`;
