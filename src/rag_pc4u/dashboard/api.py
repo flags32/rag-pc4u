@@ -171,6 +171,7 @@ def _cleanup_mapping_cache(mapping: dict) -> None:
         cache_dir = ingestion_dir / "nextcloud_cache" / collection_name
         if cache_dir.exists():
             try:
+                import shutil
                 shutil.rmtree(cache_dir)
                 logger.info(
                     "dashboard.cache_cleaned",
@@ -194,7 +195,10 @@ def _cleanup_mapping_cache(mapping: dict) -> None:
             .replace(" ", "_")
             .strip("_")
         )
-        etag_file = state_base / f".nextcloud_etag_{safe}.json"
+        # CORRECTION ICI : Ajout de {collection_name}_ dans le nom du fichier
+        # pour correspondre à la nouvelle isolation par collection.
+        etag_file = state_base / f".nextcloud_etag_{collection_name}_{safe}.json"
+
         if etag_file.exists():
             try:
                 etag_file.unlink()
